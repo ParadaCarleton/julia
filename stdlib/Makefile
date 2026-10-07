@@ -8,6 +8,7 @@ BUILDDIR := .
 include $(JULIAHOME)/Make.inc
 include $(JULIAHOME)/deps/tools/common.mk
 include $(JULIAHOME)/deps/tools/stdlib-external.mk
+include $(JULIAHOME)/stdlib/vendored.mk
 # include all `*.version` files, import `LIBNAME_JLL_NAME` and `LIBNAME_JLL_VER`
 # Note: Some deps do not have a `_jll` pkg: [libwhich, patchelf, utf8proc]
 include $(JULIAHOME)/deps/*.version
@@ -45,7 +46,7 @@ STDLIBS = Artifacts Base64 CRC32c Dates FileWatching \
           Future InteractiveUtils Libdl LibGit2 Logging \
           Markdown Mmap Printf Profile Random REPL Serialization \
           SharedArrays Sockets Test TOML Unicode UUIDs \
-          $(JLL_NAMES)
+          $(VENDORED_STDLIBS) $(JLL_NAMES)
 
 STDLIBS_EXT = Pkg Statistics LazyArtifacts LibCURL DelimitedFiles Downloads ArgTools \
               Tar NetworkOptions SuiteSparse SparseArrays StyledStrings SHA Distributed \

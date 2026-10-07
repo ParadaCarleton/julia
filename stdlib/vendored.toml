@@ -1,0 +1,13 @@
+# Packages copied into stdlib/ by contrib/vendor_stdlibs.jl.
+# `ref = "release"` takes the highest vX.Y.Z tag, any other ref is a branch; `path` symlinks an in-tree package.
+Revise = { repo = "https://github.com/timholy/Revise.jl", ref = "release" }
+JuliaInterpreter = { repo = "https://github.com/JuliaDebug/JuliaInterpreter.jl", ref = "release" }
+LoweredCodeUtils = { repo = "https://github.com/JuliaDebug/LoweredCodeUtils.jl", ref = "release" }
+CodeTracking = { repo = "https://github.com/timholy/CodeTracking.jl", ref = "release" }
+OrderedCollections = { repo = "https://github.com/JuliaCollections/OrderedCollections.jl", ref = "release" }
+Preferences = { repo = "https://github.com/JuliaPackaging/Preferences.jl", ref = "release" }
+PackageCompiler = { repo = "https://github.com/ParadaCarleton/package-compiler", ref = "reactive" }
+Glob = { repo = "https://github.com/vtjnash/Glob.jl", ref = "release" }
+RelocatableFolders = { repo = "https://github.com/JuliaPackaging/RelocatableFolders.jl", ref = "release" }
+Scratch = { repo = "https://github.com/JuliaPackaging/Scratch.jl", ref = "release" }
+Compiler = { path = "../Compiler" }
