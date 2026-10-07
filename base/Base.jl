@@ -255,6 +255,7 @@ include("deepcopy.jl")
 include("download.jl")
 include("summarysize.jl")
 include("errorshow.jl")
+include("strict.jl")
 include("util.jl")
 
 include("initdefs.jl")

@@ -163,17 +163,19 @@ macro max_methods(n::Int, fdef::Expr)
 end
 
 """
-    Experimental.@compiler_options optimize={0,1,2,3} compile={yes,no,all,min} infer={true,false} max_methods={default,1,2,3,4}
+    Experimental.@compiler_options optimize={0,1,2,3} compile={yes,no,all,min} infer={true,false} max_methods={default,1,2,3,4} strict={true,false}
 
 Set compiler options for code in the enclosing module. Options correspond directly to
-command-line options with the same name, where applicable. The following options
-are currently supported:
+command-line options with the same name, where applicable. Submodules inherit whatever
+the enclosing module set. The following options are currently supported:
 
   * `optimize`: Set optimization level.
   * `compile`: Toggle native code compilation. Currently only `min` is supported, which
     requests the minimum possible amount of compilation.
   * `infer`: Enable or disable type inference. If disabled, implies [`@nospecialize`](@ref).
   * `max_methods`: Maximum number of matching methods considered when running type inference.
+  * `strict`: Reject method definitions that commit type piracy — where neither the
+    function nor any argument type belongs to this module's package.
 """
 macro compiler_options(args...)
     opts = Expr(:block)
@@ -199,6 +201,15 @@ macro compiler_options(args...)
                   a isa Int ? ((1 <= a <= 4) ? a : error("We must have that `1 <= max_methods <= 4`, but `max_methods = $a`.")) :
                   error("invalid argument to \"max_methods\" option")
                 push!(opts.args, Expr(:meta, :max_methods, a))
+            elseif ex.args[1] === :strict
+                a = ex.args[2]
+                if a === true || a === :yes
+                    push!(opts.args, Expr(:meta, :strict, 1))
+                elseif a === false || a === :no
+                    push!(opts.args, Expr(:meta, :strict, 0))
+                else
+                    error("invalid argument to \"strict\" option")
+                end
             else
                 error("unknown option \"$(ex.args[1])\"")
             end
