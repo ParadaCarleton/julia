@@ -412,6 +412,7 @@ module ByName
     ambiguous(x::Alpha, y::Beta) = :first
     ambiguous(y::Beta, x::Alpha) = :second
     slurp(x, rest...) = (x, rest)
+    renamed(a, b) = (:first, a, b)
 end
 
 @testset "positional arguments passed by name" begin
@@ -438,4 +439,18 @@ end
 
     @test !hasmethod(ByName.pair, Tuple{Int,Int}, (:bogus,))
     @test hasmethod(ByName.scaled, Tuple{Int}, (:scale,))
+
+    # Resolution belongs to inference. A generator that stops resolving still
+    # answers correctly through the run-time body, so only inference catches it.
+    @test only(Base.return_types(Core.kwcall,
+                                 (NamedTuple{(:y,:x),Tuple{Int,Int}}, typeof(ByName.pair)))) ===
+          Tuple{Int,Int}
+    @test only(Base.return_types(Core.kwcall,
+                                 (NamedTuple{(:y,),Tuple{Int}}, typeof(ByName.pair), Int))) ===
+          Tuple{Int,Int}
+
+    # a later method that changes the resolution invalidates the generated code
+    @test ByName.renamed(a = 1, b = 2) === (:first, 1, 2)
+    @eval ByName renamed(b, a) = (:second, b, a)
+    @test ByName.renamed(a = 1, b = 2) === (:second, 2, 1)
 end
