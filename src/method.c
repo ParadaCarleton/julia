@@ -1373,6 +1373,22 @@ JL_DLLEXPORT jl_method_t* jl_method_def(jl_svec_t *argdata,
     if (!external_mt && !jl_has_empty_intersection(ft, (jl_value_t*)jl_builtin_type)) // disallow adding methods to Any, Function, Builtin, and subtypes, or Unions of those
         jl_errorf("cannot add methods to builtin function `%s`", jl_symbol_name(name));
 
+    if (jl_get_module_strict(module) == 1) {
+        // argtype is the finished signature; reject before touching the method table
+        static jl_value_t *check_method_definition = NULL;
+        if (check_method_definition == NULL && jl_base_module != NULL)
+            check_method_definition = jl_get_global(jl_base_module, jl_symbol("_check_method_definition"));
+        if (!check_method_definition)
+            jl_error("strict mode is not available during bootstrap");
+        jl_value_t **fargs;
+        JL_GC_PUSHARGS(fargs, 3);
+        fargs[0] = check_method_definition;
+        fargs[1] = (jl_value_t*)module;
+        fargs[2] = argtype;
+        jl_apply(fargs, 3);
+        JL_GC_POP();
+    }
+
     m = jl_new_method_uninit(module);
     m->external_mt = (jl_value_t*)external_mt;
     if (external_mt)
