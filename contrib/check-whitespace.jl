@@ -37,7 +37,7 @@ function check_whitespace()
     errors = Set{Tuple{String,Int,String}}()
     files_to_check = filter(arg -> arg != "--fix", ARGS)
     if isempty(files_to_check)
-        files_to_check = eachline(`git ls-files -- $patterns`)
+        files_to_check = eachline(`git ls-files -- $patterns :(exclude,attr:linguist-vendored)`)
     end
 
     files_fixed = 0
