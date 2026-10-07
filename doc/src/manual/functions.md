@@ -885,6 +885,27 @@ this example, `width` is certain to have the value `2`. However, explicitly spec
 argument multiple times, for example `plot(x, y, width=2, width=3)`, is not allowed and results in
 a syntax error.
 
+## Positional Arguments Passed by Name
+
+A positional argument may also be supplied by the name it is declared with:
+
+```jldoctest
+julia> divide(numerator, denominator) = numerator / denominator;
+
+julia> divide(denominator = 4, numerator = 6)
+1.5
+
+julia> divide(6, denominator = 4)
+1.5
+```
+
+The names are matched against the declared parameters of every method of the function, and the
+values are moved into position before dispatch, so the usual type-based method selection applies
+to the reordered call. Naming a parameter behaves exactly as supplying it positionally would: a
+vararg tail is not nameable and stays empty unless positional arguments fill it, just as in
+`f(x, rest...)` called as `f(1)`. When two methods declare the same parameter names in different
+orders the call is ambiguous and raises an `ArgumentError`.
+
 ## Evaluation Scope of Default Values
 
 When optional and keyword argument default expressions are evaluated, only *previous* arguments are in
