@@ -116,11 +116,14 @@ function register!(
     for name in vendored
         package = packages[name]
         project["deps"][name] = package.uuid
-        manifest["deps"][name] = [Dict(
+        entry = Dict{String, Union{String, Vector{String}}}(
             "uuid" => package.uuid,
             "version" => string(package.version),
-            "deps" => package.deps,
-        )]
+        )
+        if !isempty(package.deps)
+            entry["deps"] = package.deps
+        end
+        manifest["deps"][name] = [entry]
     end
     write(
         joinpath(STDLIB, "vendored.mk"),
