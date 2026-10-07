@@ -26,7 +26,6 @@ uuid = "da1fd8a2-8d9e-5ec2-8556-3022fb5608a2"
 version = "3.0.2"
 
 [[deps.Compiler]]
-deps = []
 uuid = "807dbc54-b67e-4c79-8afb-eafe4df6f2e1"
 version = "0.1.1"
 
@@ -72,7 +71,6 @@ uuid = "781609d7-10c4-51f6-84f2-b8444358ff6d"
 version = "6.3.0+2"
 
 [[deps.Glob]]
-deps = []
 uuid = "c27321d9-0574-5035-807b-f59d2c89b15c"
 version = "1.5.0"
 
@@ -197,7 +195,6 @@ uuid = "458c3c95-2e84-50aa-8efc-19380b2a3a95"
 version = "3.5.6+0"
 
 [[deps.OrderedCollections]]
-deps = []
 uuid = "bac558e1-5e72-5ebc-8fee-abe8a469f55d"
 version = "2.0.2"
 
