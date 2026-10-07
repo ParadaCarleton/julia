@@ -18,6 +18,8 @@ const patterns = split("""
     *Makefile
 """)
 
+const vendored = ":(exclude,attr:linguist-vendored)"
+
 const is_gha = something(tryparse(Bool, get(ENV, "GITHUB_ACTIONS", "false")), false)
 
 # Note: `git ls-files` gives `/` as a path separator on Windows,
@@ -37,7 +39,7 @@ function check_whitespace()
     errors = Set{Tuple{String,Int,String}}()
     files_to_check = filter(arg -> arg != "--fix", ARGS)
     if isempty(files_to_check)
-        files_to_check = eachline(`git ls-files -- $patterns :(exclude,attr:linguist-vendored)`)
+        files_to_check = eachline(`git ls-files -- $patterns $vendored`)
     end
 
     files_fixed = 0
