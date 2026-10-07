@@ -1,0 +1,694 @@
+"""
+    abstract type Interpreter end
+
+An interpreter that subtypes this type can implement its own evaluation strategies, by
+overloading certain methods in JuliaInterpreter that are defined for this base type.
+The default behavior of `Interpreter` is same as that of [`RecursiveInterpreter`](@ref),
+meaning it will recursively interpret all `:call` expressions.
+"""
+abstract type Interpreter end
+
+"""
+    RecursiveInterpreter <: Interpreter
+
+`RecursiveInterpreter` is an [`Interpreter`](@ref) that recursively interprets any `:call`
+expressions in the code being interpreted.
+
+With this interpreter, code runs in fully interpreted mode; it will never be compiled for execution.
+"""
+struct RecursiveInterpreter <: Interpreter end
+
+"""
+    NonRecursiveInterpreter <: Interpreter
+
+`NonRecursiveInterpreter` is an [`Interpreter`](@ref) that evaluates any `:call` expressions
+in the code being interpreted using Julia's normal code execution engine with the native
+compiler.
+
+`JuliaInterpreter.Compiled` is aliased to `NonRecursiveInterpreter` for backward compatibility.
+"""
+struct NonRecursiveInterpreter <: Interpreter end
+
+"""
+    const Compiled = NonRecursiveInterpreter
+
+As of JuliaInterpreter v0.10, `Compiled` is now an alias for [`NonRecursiveInterpreter`](@ref).
+This alias remains for backward compatibility. Prefer [`NonRecursiveInterpreter`](@ref) in new code.
+"""
+const Compiled = NonRecursiveInterpreter # for backward compatibility
+Base.similar(::Compiled, _sz) = Compiled()  # to support similar(stack, 0)
+
+"""
+    method_table(interpreter::Interpreter) -> mt::Union{Nothing,MethodTable}
+
+Configures the method table used for method lookups performed by the interpreter.
+Uses the global method table by default.
+"""
+method_table(::Interpreter) = nothing
+
+# Our own replacements for Core types. We need to do this to ensure we can tell the difference
+# between "data" (Core types) and "code" (our types) if we step into Core.Compiler
+struct SSAValue
+    id::Int
+end
+struct SlotNumber
+    id::Int
+end
+
+Base.show(io::IO, ssa::SSAValue)    = print(io, "%J", ssa.id)
+Base.show(io::IO, slot::SlotNumber) = print(io, "_J", slot.id)
+
+"""
+    BreakpointState(isactive=true, condition=JuliaInterpreter.truecondition)
+
+`BreakpointState` represents a breakpoint at a particular statement in
+a `FrameCode`. `isactive` indicates whether the breakpoint is currently
+[`enable`](@ref)d or [`disable`](@ref)d. `condition` is a function that accepts
+a single `Frame`, and `condition(frame)` must return either
+`true` or `false`. Execution will stop at a breakpoint only if `isactive`
+and `condition(frame)` both evaluate as `true`. The default `condition` always
+returns `true`.
+
+To create these objects, see [`breakpoint`](@ref).
+"""
+struct BreakpointState
+    isactive::Bool
+    condition::Function
+end
+BreakpointState(isactive::Bool) = BreakpointState(isactive, truecondition)
+BreakpointState() = BreakpointState(true)
+
+function breakpointchar(bps::BreakpointState)
+    if bps.isactive
+        return bps.condition === truecondition ? 'b' : 'c'  # unconditional : conditional
+    end
+    return bps.condition === falsecondition ? ' ' : 'd'     # no breakpoint : disabled
+end
+
+struct _FrameInstance{FrameCode}
+    framecode::FrameCode
+    sparam_vals::SimpleVector
+    enter_generated::Bool
+end
+Base.show(io::IO, instance::_FrameInstance) =
+    print(io, "FrameInstance(", scopeof(instance.framecode), ", ", instance.sparam_vals, ", ", instance.enter_generated, ')')
+
+mutable struct _DispatchableMethod{FrameCode}
+    next::Union{Nothing,_DispatchableMethod{FrameCode}}  # linked-list representation
+    frameinstance::Union{Compiled,_FrameInstance{FrameCode}} # really a Union{Compiled, FrameInstance} but we have a cyclic dependency
+    sig::Type # for speed of matching, this is a *concrete* signature. `sig <: frameinstance.framecode.scope.sig`
+    world::UInt # world age in which `frameinstance` was resolved for `sig`; a later world forces re-resolution
+    mt::Union{Nothing,MethodTable} # method table the resolution used; a different table forces re-resolution
+    # Without this explicit inner constructor, Julia auto-generates an outer one where
+    # `FrameCode` is unbound when next=nothing and frameinstance=Compiled().
+    _DispatchableMethod{FrameCode}(next, frameinstance, sig, world, mt) where {FrameCode} =
+        new{FrameCode}(next, frameinstance, sig, world, mt)
+end
+
+# 0: none
+# 1: user
+# 2: all
+const COVERAGE = Ref{Int8}()
+function do_coverage(m::Module)
+    COVERAGE[] == 2 && return true
+    if COVERAGE[] == 1
+       root = Base.moduleroot(m)
+       return root !== Base && root !== Core
+    end
+    return false
+end
+
+# Element type of `FrameCode.world_deps`: the binding partitions of globals whose *values* were
+# resolved at framecode-build time (e.g. a folded `const` global or a library name baked into a
+# compiled `ccall` wrapper; see `record_world_dep!`). `Core.BindingPartition` only exists on
+# Julia 1.12+; pre-1.12 a binding cannot be replaced in a way the world age tracks, so
+# `world_deps` is always empty there.
+@static if isbindingresolved_deprecated
+    const BindingPartition = Core.BindingPartition
+else
+    const BindingPartition = Union{}
+end
+
+"""
+`FrameCode` holds static information about a method or toplevel code.
+One `FrameCode` can be shared by many calling `Frame`s.
+
+Important fields:
+- `scope`: the `Method` or `Module` in which this frame is to be evaluated.
+- `src`: the `CodeInfo` object storing (optimized) lowered source code.
+- `methodtables`: a vector, each entry potentially stores a "local method table" for the corresponding
+  `:call` expression in `src` (undefined entries correspond to statements that do not
+  contain `:call` expressions).
+- `used`: a `BitSet` storing the list of SSAValues that get referenced by later statements.
+"""
+struct FrameCode
+    scope::Union{Method,Module}
+    src::CodeInfo
+    methodtables::Vector{Union{Compiled,_DispatchableMethod{FrameCode}}} # line-by-line method tables for generic-function :call Exprs
+    breakpoints::Vector{BreakpointState}
+    slotnamelists::Dict{Symbol,Vector{Int}}
+    used::BitSet
+    generator::Bool   # true if this is for the expression-generator of a @generated function
+    report_coverage::Bool
+    unique_files::Set{Symbol}
+    # true if `src.code` holds *unlowered* surface statements of a `:toplevel`/`:module`
+    # expression that must be interpreted statement-by-statement (see `step_toplevel!`)
+    is_toplevel_surface::Bool
+    # `Core.BindingPartition`s for globals whose values were baked into this framecode, as folded
+    # `const` globals or into compiled `ccall`/`llvmcall` wrappers (empty unless any were baked).
+    # Each is an in-place invalidation token: redefining the binding drops its `max_world`, so
+    # `framecode_valid_world` can reject this cached `FrameCode` for worlds in which a baked value
+    # would be stale.
+    # Only populated on Julia 1.12+ (see `record_world_dep!`).
+    world_deps::Vector{BindingPartition}
+end
+
+"""
+`FrameInstance` represents a method specialized for particular argument types.
+
+Fields:
+- `framecode`: the [`FrameCode`](@ref) for the method.
+- `sparam_vals`: the static parameter values for the method.
+"""
+const FrameInstance = _FrameInstance{FrameCode}
+const DispatchableMethod = _DispatchableMethod{FrameCode}
+
+const BREAKPOINT_EXPR = :($(QuoteNode(getproperty))($JuliaInterpreter, :__BREAKPOINT_MARKER__))
+function is_breakpoint_expr(ex::Expr)
+    # Sadly, comparing QuoteNodes calls isequal(::Any, ::Any), and === seems not to work.
+    # To avoid invalidations, do it the hard way.
+    ex.head === :call || return false
+    length(ex.args) === 3 || return false
+    (q = ex.args[1]; isa(q, QuoteNode) && q.value === getproperty) || return false
+    ex.args[2] === JuliaInterpreter || return false
+    q = ex.args[3]
+    return isa(q, QuoteNode) && q.value === :__BREAKPOINT_MARKER__
+end
+
+# `@bp` lowers to a `GlobalRef` of the `__BREAK_POINT_MARKER__` const. `optimize!` folds it
+# to its value in method scope (unwrapped from the `QuoteNode` by `lookup_stmt`), while
+# toplevel or unoptimized code keeps the `GlobalRef`, so accept both forms.
+is_breakpoint_marker(@nospecialize(stmt)) =
+    stmt === __BREAK_POINT_MARKER__ || is_global_ref(stmt, JuliaInterpreter, :__BREAK_POINT_MARKER__)
+
+@static if VERSION ≥ v"1.12.0-DEV.173"
+function pushuniquefiles!(unique_files::Set{Symbol}, lt::Core.DebugInfo)
+    for edge in lt.edges
+        pushuniquefiles!(unique_files, edge::Core.DebugInfo)
+    end
+    linetable = lt.linetable
+    if linetable === nothing
+        push!(unique_files, Base.IRShow.debuginfo_file1(lt))
+    else
+        pushuniquefiles!(unique_files, linetable)
+    end
+    return unique_files
+end
+end
+
+# The running task's current world age. Unlike `Base.get_world_counter()` (the latest
+# committed world), this is the world the calling code itself executes in, so interpreted
+# method frames see exactly the methods and bindings a compiled call from the same point
+# would see — including raising a world-age error for a method defined too recently.
+@static if isdefined(Base, :tls_world_age)
+    const tls_world_age = Base.tls_world_age
+else
+    tls_world_age() = ccall(:jl_get_tls_world_age, UInt, ())
+end
+
+# The default world for entering interpretation is the caller's task world, matching the
+# semantics of an ordinary (non-`invokelatest`) call. A frame captures this once at
+# construction and holds it, giving a consistent world while stepping even if new code is
+# defined mid-session; toplevel frames refresh to the latest committed world per statement
+# so that definitions from earlier statements become visible.
+default_world() = tls_world_age()
+
+function FrameCode(scope, src::CodeInfo; generator=false, optimize=true, world::UInt=default_world(),
+                   is_toplevel_surface::Bool=false)
+    src = replace_coretypes!(copy(src))
+    methodtables = Vector{Union{Compiled,DispatchableMethod}}(undef, length(src.code))
+    world_deps = BindingPartition[]
+    compile_llvmcalls!(src, methodtables, world_deps, scope, world)
+    expose_eval_call!(src, scope)
+    optimize && optimize!(src, methodtables, world_deps, scope, world)
+    breakpoints = Vector{BreakpointState}(undef, length(src.code))
+    for (i, pc_expr) in enumerate(src.code)
+        if is_breakpoint_marker(lookup_stmt(src.code, pc_expr, world))
+            breakpoints[i] = BreakpointState()
+            src.code[i] = nothing
+        end
+    end
+    slotnamelists = Dict{Symbol,Vector{Int}}()
+    for (i, sym) in enumerate(src.slotnames)
+        list = get(slotnamelists, sym, Int[])
+        slotnamelists[sym] = push!(list, i)
+    end
+    used = find_used(src)
+    report_coverage = do_coverage(moduleof(scope))
+
+    lt = linetable(src)
+    unique_files = Set{Symbol}()
+    @static if VERSION ≥ v"1.12.0-DEV.173"
+    pushuniquefiles!(unique_files, lt)
+    else # VERSION < v"1.12.0-DEV.173"
+    for entry in lt
+        # issue #701: macro-generated `LineNumberNode`s (e.g. MacroTools' `@q`/`@qq`) can
+        # carry a `nothing` file, which has no path to match a breakpoint against.
+        entry.file === nothing && continue
+        push!(unique_files, entry.file)
+    end
+    end # @static if
+
+    framecode = FrameCode(scope, src, methodtables, breakpoints, slotnamelists, used, generator, report_coverage, unique_files, is_toplevel_surface, world_deps)
+    if scope isa Method
+        for bp in _breakpoints
+            # Manual union splitting
+            if bp isa BreakpointSignature
+                add_breakpoint_if_match!(framecode, bp)
+            elseif bp isa BreakpointFileLocation
+                add_breakpoint_if_match!(framecode, bp)
+            else
+                error("unhandled breakpoint type")
+            end
+        end
+    else
+        for bp in _breakpoints
+            if bp isa BreakpointFileLocation
+                add_breakpoint_if_match!(framecode, bp)
+            end
+        end
+    end
+
+    return framecode
+end
+
+nstatements(framecode::FrameCode) = length(framecode.src.code)
+
+Base.show(io::IO, framecode::FrameCode) = print_framecode(io, framecode)
+
+"""
+`FrameData` holds the arguments, local variables, and intermediate execution state
+in a particular call frame.
+
+Important fields:
+- `locals`: a vector containing the input arguments and named local variables for this frame.
+  The indexing corresponds to the names in the `slotnames` of the src. Use [`locals`](@ref)
+  to extract the current value of local variables.
+- `ssavalues`: a vector containing the
+  [Static Single Assignment](https://en.wikipedia.org/wiki/Static_single_assignment_form)
+  values produced at the current state of execution.
+- `sparams`: the static type parameters, e.g., for `f(x::Vector{T}) where T` this would store
+  the value of `T` given the particular input `x`.
+- `exception_frames`: a list of indexes to `catch` blocks for handling exceptions within
+  the current frame. The active handler is the last one on the list.
+- `exception_scopes`: parallel to `exception_frames`, the depth of `current_scopes` when
+  each handler was entered, so unwinding an exception can restore the scope stack.
+- `exceptions`: the stack of exceptions currently being handled by this frame (innermost
+  last), mirroring the task's exception stack in native execution. A handler entry pushes;
+  `Expr(:pop_exception, token)` restores the depth recorded at the corresponding `:enter`.
+- `last_exception`: the exception currently being handled by this frame or one of its
+  callees (the top of `exceptions` while nonempty).
+"""
+struct FrameData
+    locals::Vector{Union{Nothing,Some{Any}}}
+    ssavalues::Vector{Any}
+    sparams::Vector{Any}
+    exception_frames::Vector{Int}
+    exception_scopes::Vector{Int}
+    exceptions::Vector{Any}
+    current_scopes::Vector{Scope}
+    last_exception::Base.RefValue{Any}
+    caller_will_catch_err::Bool
+    last_reference::Vector{Int}
+    callargs::Vector{Any}  # a temporary for processing arguments of :call exprs
+end
+
+"""
+    _INACTIVE_EXCEPTION
+
+Represents a case where no exceptions are thrown yet.
+End users will not see this singleton type, otherwise it usually means there is missing
+error handling in the interpretation process.
+"""
+struct _INACTIVE_EXCEPTION end
+
+"""
+`Frame` represents the current execution state in a particular call frame.
+Fields:
+- `framecode`: the [`FrameCode`](@ref) for this frame.
+- `framedata`: the [`FrameData`](@ref) for this frame.
+- `pc`: the program counter (integer index of the next statement to be evaluated) for this frame.
+- `caller`: the parent caller of this frame, or `nothing`.
+- `callee`: the frame called by this one, or `nothing`.
+
+The `Base` functions `show_backtrace` and `display_error` are overloaded such that
+`show_backtrace(io::IO, frame::Frame)` and `display_error(io::IO, er, frame::Frame)`
+shows a backtrace or error, respectively, in a similar way as to how Base shows
+them.
+"""
+mutable struct Frame
+    framecode::FrameCode
+    framedata::FrameData
+    pc::Int
+    assignment_counter::Int64
+    caller::Union{Frame,Nothing}
+    callee::Union{Frame,Nothing}
+    last_codeloc::Int
+    # The world age in which this frame's code is dispatched and globals are looked up.
+    # Captured at construction (see `default_world`) and held fixed for method frames, so
+    # stepping sees a consistent world even if new code is defined mid-session. Toplevel
+    # frames refresh it per statement, and `:latestworld` markers advance it after a
+    # world-incrementing statement.
+    world::UInt
+    # True while the frame sits in the recycling pool (`junk_frames`). Lets `recycle` be
+    # idempotent (see there) with a field load instead of an `IdSet` membership test.
+    pooled::Bool
+end
+function Frame(framecode::FrameCode, framedata::FrameData, pc=1, caller=nothing,
+               world::UInt=default_world())
+    if length(junk_frames) > 0
+        frame = pop!(junk_frames)
+        frame.pooled = false
+        frame.framecode = framecode
+        frame.framedata = framedata
+        frame.pc = pc
+        frame.assignment_counter = 1
+        frame.caller = caller
+        frame.callee = nothing
+        frame.last_codeloc = 0
+        frame.world = world
+        return frame
+    else
+        return Frame(framecode, framedata, pc, 1, caller, nothing, 0, world, false)
+    end
+end
+"""
+    frame = Frame(mod::Module, src::CodeInfo; world::UInt=Base.get_world_counter(), kwargs...)
+
+Construct a `Frame` to evaluate the top-level code `src` in module `mod`. `world` sets the
+world age used for dispatch. Like native evaluation of top-level code, it defaults to the
+latest committed world, and when the frame is run at top level (`istoplevel=true`), it
+advances at each `:latestworld` statement on Julia 1.12 and later, and before each statement
+on earlier versions. Additional keyword arguments (`generator`, `optimize`) are forwarded to
+[`FrameCode`](@ref).
+
+Pass `optimize=false` to skip [`JuliaInterpreter.optimize!`](@ref): the statements of `src`
+then stay as lowered, except for the transformations required to interpret them (`llvmcall`s
+are always compiled). Statement indices are preserved either way.
+"""
+function Frame(mod::Module, src::CodeInfo; world::UInt=Base.get_world_counter(), caller_will_catch_err::Bool=false, kwargs...)
+    framecode = FrameCode(mod, src; world, kwargs...)
+    return Frame(framecode, prepare_framedata(framecode, [], empty_svec, caller_will_catch_err), 1, nothing, world)
+end
+# Build a synthetic `CodeInfo` whose `code` holds the *unlowered* surface statements of a
+# `:toplevel`/`:module` body. Such a frame is stepped statement-by-statement by `step_toplevel!`,
+# which lowers ordinary statements to child frames and handles `:module`/`:using`/... directly.
+function toplevel_codeinfo(mod::Module, stmts::Vector{Any})
+    ci = ((Meta.lower(mod, :(1 + 1))::Expr).args[1])::CodeInfo   # a throwaway skeleton; we overwrite its body
+    code = copy(stmts)
+    push!(code, Core.ReturnNode(isempty(code) ? nothing : Core.SSAValue(length(code))))
+    n = length(code)
+    ci.code = code
+    ci.ssavaluetypes = n
+    ci.ssaflags = zeros(eltype(ci.ssaflags), n)
+    ci.slotnames = Symbol[Symbol("#self#")]
+    ci.slotflags = UInt8[0x00]
+    # `step_toplevel!` reads line info from the surface `LineNumberNode`s in `code` directly and
+    # never consults the `CodeInfo`'s line tables, so the skeleton's debuginfo is left untouched on
+    # 1.12+ (where `codelocs` was folded into `debuginfo`); on older versions `codelocs` must match
+    # the new code length.
+    @static if !(VERSION ≥ v"1.12.0-DEV.173")
+        ci.codelocs = fill(Int32(1), n)
+    end
+    return ci
+end
+
+function toplevel_frame(mod::Module, stmts::Vector{Any}; world::UInt=Base.get_world_counter(), caller_will_catch_err::Bool=false)
+    ci = toplevel_codeinfo(mod, stmts)
+    framecode = FrameCode(mod, ci; optimize=false, is_toplevel_surface=true, world)
+    return Frame(framecode, prepare_framedata(framecode, [], empty_svec, caller_will_catch_err), 1, nothing, world)
+end
+
+"""
+    frame = Frame(mod::Module, ex::Expr)
+
+Construct a `Frame` to evaluate `ex` in module `mod`.
+
+`ex` may be an ordinary expression (lowered to a `:thunk`) or a `:toplevel`/`:module`
+expression, in which case the resulting frame interprets the surface statements directly.
+
+A `:module` expression is evaluated like native evaluation does: the frame creates a fresh
+module when it reaches the expression (replacing any existing module of the same name),
+interprets the body in it, runs its `__init__` (natively), and evaluates to the module.
+This differs from [`ExprSplitter`](@ref), which re-enters existing modules and never runs
+`__init__`.
+
+This constructor can error, for example if lowering `ex` results in an `:error` or `:incomplete`
+expression, or if it otherwise fails to return a `:thunk`.
+"""
+function Frame(mod::Module, ex::Expr; world::UInt=Base.get_world_counter(), caller_will_catch_err::Bool=false)
+    if isexpr(ex, :toplevel)
+        return toplevel_frame(mod, ex.args; world, caller_will_catch_err)
+    elseif isexpr(ex, :module)
+        # The module is created when the frame evaluates the expression, not here.
+        return toplevel_frame(mod, Any[ex]; world, caller_will_catch_err)
+    end
+    lwr = Meta.lower(mod, ex)
+    isexpr(lwr, :thunk, 1) && return Frame(mod, (lwr.args[1])::CodeInfo; world, caller_will_catch_err)
+    if isexpr(lwr, :error) || isexpr(lwr, :incomplete)
+        if isexpr(ex, :block)
+            # `ExprSplitter` wraps each split statement in a block carrying its
+            # LineNumberNode. A macrocall that expands to a declaration (e.g. a macro
+            # returning `global x`, as issue #28833's test does) only lowers at true
+            # top level, so the wrapper block itself fails with 'misplaced
+            # declaration'. Retry the block's statements as toplevel-surface
+            # statements, which are lowered individually in toplevel context.
+            return toplevel_frame(mod, ex.args; world, caller_will_catch_err)
+        end
+        throw(ArgumentError("lowering returned an error, $lwr"))
+    end
+    # `macroexpand` inside lowering can surface a `:toplevel`/`:module` (lowering leaves these intact)
+    if isexpr(lwr, (:toplevel, :module))
+        return Frame(mod, lwr::Expr; world, caller_will_catch_err)
+    end
+    # Lowering is the identity on bare declarations (`global x`, `public x`, `using`/
+    # `import`/`export`, ...) and returns a literal (e.g. `nothing`) for expressions
+    # without effects. Wrap the original expression in a single-statement
+    # toplevel-surface frame, whose driver evaluates such statements directly.
+    return toplevel_frame(mod, Any[ex]; world, caller_will_catch_err)
+end
+
+caller(frame::Frame) = frame.caller
+callee(frame::Frame) = frame.callee
+
+function traverse(f, frame::Frame)
+    nextframe = f(frame)
+    while nextframe !== nothing
+        frame = nextframe
+        nextframe = f(frame)
+    end
+    return frame
+end
+
+"""
+    rframe = root(frame)
+
+Return the initial frame in the call stack.
+"""
+root(frame) = traverse(caller, frame)
+
+"""
+    lframe = leaf(frame)
+
+Return the deepest callee in the call stack.
+"""
+leaf(frame) = traverse(callee, frame)
+
+function Base.show(io::IO, frame::Frame)
+    frame_loc = Base.fixup_stdlib_path(repr(scopeof(frame)))
+    println(io, "Frame for ", frame_loc)
+    pc = frame.pc
+    ns = nstatements(frame.framecode)
+    range = get(io, :limit, false) ? (max(1, pc-2):min(ns, pc+2)) : (1:ns)
+    first(range) > 1 && println(io, "⋮")
+    print_framecode(io, frame.framecode; pc=pc, range=range)
+    last(range) < ns && print(io, "\n⋮")
+    print_vars(IOContext(io, :limit=>true, :compact=>true), locals(frame))
+    if caller(frame) !== nothing
+        print(io, "\ncaller: ", scopeof(caller(frame)))
+    end
+    if callee(frame) !== nothing
+        print(io, "\ncallee: ", scopeof(callee(frame)))
+    end
+end
+
+"""
+`Variable` is a struct representing a variable with an asigned value.
+By calling the function [`locals`](@ref) on a [`Frame`](@ref) a
+`Vector` of `Variable`'s is returned.
+
+Important fields:
+- `value::Any`: the value of the local variable.
+- `name::Symbol`: the name of the variable as given in the source code.
+- `isparam::Bool`: if the variable is a type parameter, for example `T` in `f(x::T) where {T} = x`.
+- `is_captured_closure::Bool`: if the variable has been captured by a closure
+"""
+struct Variable
+    value::Any
+    name::Symbol
+    isparam::Bool
+    is_captured_closure::Bool
+end
+Variable(value, name) = Variable(value, name, false, false)
+Variable(value, name, isparam) = Variable(value, name, isparam, false)
+Base.show(io::IO, var::Variable) = (print(io, var.name, " = "); show(io,var.value))
+Base.isequal(var1::Variable, var2::Variable) =
+    isequal(var1.value, var2.value) && var1.name === var2.name && var1.isparam == var2.isparam &&
+    var1.is_captured_closure == var2.is_captured_closure
+Base.:(==)(var1::Variable, var2::Variable) = isequal(var1, var2)
+Base.hash(var::Variable, h::UInt) =
+    hash(var.value, hash(var.name, hash(var.isparam, hash(var.is_captured_closure, hash(:Variable, h)))))
+
+# A type that is unique to this package for which there are no valid operations
+struct Unassigned end
+
+"""
+    BreakpointRef(framecode, stmtidx)
+    BreakpointRef(framecode, stmtidx, err)
+
+A reference to a breakpoint at a particular statement index `stmtidx` in `framecode`.
+If the break was due to an error, supply that as well.
+
+Commands that execute complex control-flow (e.g., `next_line!`) may also return a
+`BreakpointRef` to indicate that the execution stack switched frames, even when no
+breakpoint has been set at the corresponding statement.
+"""
+struct BreakpointRef
+    framecode::FrameCode
+    stmtidx::Int
+    err
+end
+BreakpointRef(framecode, stmtidx) = BreakpointRef(framecode, stmtidx, nothing)
+Base.getindex(bp::BreakpointRef) = bp.framecode.breakpoints[bp.stmtidx]
+Base.setindex!(bp::BreakpointRef, isactive::Bool) =
+    bp.framecode.breakpoints[bp.stmtidx] = BreakpointState(isactive, bp[].condition)
+
+function Base.show(io::IO, bp::BreakpointRef)
+    if checkbounds(Bool, bp.framecode.breakpoints, bp.stmtidx)
+        lineno = linenumber(bp.framecode, bp.stmtidx)
+        print(io, "breakpoint(", bp.framecode.scope, ", line ", lineno)
+    else
+        print(io, "breakpoint(", bp.framecode.scope, ", %", bp.stmtidx)
+    end
+    if bp.err !== nothing
+        print(io, ", ", bp.err)
+    end
+    print(io, ')')
+end
+
+# Possible types for breakpoint condition
+const Condition = Union{Nothing,Expr,Tuple{Module,Expr}}
+
+"""
+`AbstractBreakpoint` is the abstract type that is the supertype for breakpoints. Currently,
+the concrete breakpoint types [`BreakpointSignature`](@ref) and [`BreakpointFileLocation`](@ref)
+exist.
+
+Common fields shared by the concrete breakpoints:
+
+- `condition::Union{Nothing,Expr,Tuple{Module,Expr}}`: the condition when the breakpoint applies .
+  `nothing` means unconditionally, otherwise when the `Expr` (optionally in `Module`).
+- `enabled::Ref{Bool}`: If the breakpoint is enabled (should not be directly modified, use [`enable()`](@ref) or [`disable()`](@ref)).
+- `instances::Vector{BreakpointRef}`: All the [`BreakpointRef`](@ref) that the breakpoint has applied to.
+- `line::Int` The line of the breakpoint (equal to 0 if unset).
+
+See [`BreakpointSignature`](@ref) and [`BreakpointFileLocation`](@ref) for additional fields in the concrete types.
+"""
+abstract type AbstractBreakpoint end
+
+same_location(::AbstractBreakpoint, ::AbstractBreakpoint) = false
+
+function print_bp_condition(io::IO, cond::Condition)
+    if cond !== nothing
+        if isa(cond, Tuple{Module, Expr})
+            cond = (cond[1], Base.remove_linenums!(copy(cond[2])))
+        elseif isa(cond, Expr)
+            cond = Base.remove_linenums!(copy(cond))
+        end
+        print(io, " ", cond)
+    end
+end
+
+"""
+A `BreakpointSignature` is a breakpoint that is set on methods or functions.
+
+Fields:
+
+- `f::Union{Method, Function, Type}`: A method or function that the breakpoint should apply to.
+- `sig::Union{Nothing, Type}`: if `f` is a `Method`, always equal to `nothing`. Otherwise, contains the method signature
+   as a tuple type for what methods the breakpoint should apply to.
+
+For common fields shared by all breakpoints, see [`AbstractBreakpoint`](@ref).
+"""
+struct BreakpointSignature <: AbstractBreakpoint
+    f::Union{Method, Base.Callable}
+    sig::Union{Nothing, Type}
+    line::Int # 0 is a sentinel for first statement
+    condition::Condition
+    enabled::Base.RefValue{Bool}
+    instances::Vector{BreakpointRef}
+end
+same_location(bp2::BreakpointSignature, bp::BreakpointSignature) =
+    bp2.f == bp.f && bp2.sig == bp.sig && bp2.line == bp.line
+function Base.show(io::IO, bp::BreakpointSignature)
+    print(io, bp.f)
+    bbsig = bp.sig
+    if bbsig !== nothing
+        print(io, '(', join("::" .* string.(bbsig.types), ", "), ')')
+    end
+    if bp.line !== 0
+        print(io, ":", bp.line)
+    end
+    print_bp_condition(io, bp.condition)
+    if !bp.enabled[]
+        print(io, " [disabled]")
+    end
+end
+
+"""
+A `BreakpointFileLocation` is a breakpoint that is set on a line in a file.
+
+Fields:
+- `path::String`: The literal string that was used to create the breakpoint, e.g. `"path/file.jl"`.
+- `abspath`::String: The absolute path to the file when the breakpoint was created, e.g. `"/Users/Someone/path/file.jl"`.
+
+For common fields shared by all breakpoints, see [`AbstractBreakpoint`](@ref).
+"""
+struct BreakpointFileLocation <: AbstractBreakpoint
+    # Both the input path and the absolute path is stored to handle the case
+    # where a user sets a breakpoint on a relative path e.g. `../foo.jl`. The absolute path is needed
+    # to handle the case where the current working directory change, and
+    # the input path is needed to do "partial path matches", e.g match "src/foo.jl" against
+    # "Package/src/foo.jl".
+    path::String
+    abspath::String
+    line::Int
+    condition::Condition
+    enabled::Base.RefValue{Bool}
+    instances::Vector{BreakpointRef}
+end
+same_location(bp2::BreakpointFileLocation, bp::BreakpointFileLocation) =
+    bp2.path == bp.path && bp2.abspath == bp.abspath && bp2.line == bp.line
+function Base.show(io::IO, bp::BreakpointFileLocation)
+    print(io, bp.path, ':', bp.line)
+    print_bp_condition(io, bp.condition)
+    if !bp.enabled[]
+        print(io, " [disabled]")
+    end
+end
+
+# Breakpoint support
+truecondition(::Frame) = true
+falsecondition(::Frame) = false
+const break_on_error = Ref(false)
+const break_on_throw = Ref(false)
