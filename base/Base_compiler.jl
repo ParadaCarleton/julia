@@ -224,6 +224,12 @@ setfield!(typeof(invoke).name, :max_args, Int32(3), :monotonic) # invoke, f, T, 
 # to forward to applicable
 function Core.kwcall(kwargs::NamedTuple, ::typeof(applicable), @nospecialize(args...))
     @inline
+    if isdefined(@__MODULE__, :by_name_applicable) && !isempty(args)
+        if resolves_without_fallback(kwargs, args)
+            return true
+        end
+        return by_name_applicable(kwargs, first(args), tail(args))
+    end
     return applicable(Core.kwcall, kwargs, args...)
 end
 function Core._hasmethod(@nospecialize(f), @nospecialize(t)) # this function has a special tfunc (TODO: make this a Builtin instead like applicable)
