@@ -297,7 +297,7 @@ end
     @test_throws UndefKeywordError f34516()
     @test_throws UndefKeywordError f34516(1)
     g34516(@nospecialize(x); k=0) = 0
-    @test only(methods(Core.kwcall, (Any, typeof(g34516), Vararg))).nospecialize != 0
+    @test which(Core.kwcall, (NamedTuple, typeof(g34516), Any)).nospecialize != 0
 end
 @testset "issue #21518" begin
     a = 0
@@ -389,7 +389,7 @@ f41416(a...="a"; b=true) = (b, a)
 @test f41416(3; b=false) === (false, (3,))
 
 Core.kwcall(i::Int) = "hi $i"
-let m = first(methods(Core.kwcall, (NamedTuple,typeof(kwf1),Vararg)))
+let m = which(Core.kwcall, (NamedTuple,typeof(kwf1),Any))
     @test m.name === :kwf1
     @test Core.kwcall(1) == "hi 1"
     @test which(Core.kwcall, (Int,)).name === :kwcall
@@ -400,3 +400,42 @@ function f50518(xs...=["a", "b", "c"]...; debug=false)
     return xs[1]
 end
 @test f50518() == f50518(;debug=false) == "a"
+
+module ByName
+    struct Alpha end
+    struct Beta end
+    pair(x, y) = (x, y)
+    trailing(x, y = 10) = (x, y)
+    scaled(x; scale = 1) = x * scale
+    swapped(x::Alpha, y::Beta) = (:alpha, :beta)
+    swapped(x::Beta, y::Alpha) = (:beta, :alpha)
+    ambiguous(x::Alpha, y::Beta) = :first
+    ambiguous(y::Beta, x::Alpha) = :second
+    slurp(x, rest...) = (x, rest)
+end
+
+@testset "positional arguments passed by name" begin
+    @test ByName.pair(y = 2, x = 1) === (1, 2)
+    @test ByName.pair(1, y = 2) === (1, 2)
+    @test ByName.trailing(x = 3) === (3, 10)
+    @test ByName.trailing(y = 4, x = 3) === (3, 4)
+    @test ByName.scaled(x = 2, scale = 5) == 10
+    @test ByName.scaled(scale = 5, x = 2) == 10
+    @test ByName.scaled(2, scale = 5) == 10
+    @test ByName.swapped(x = ByName.Alpha(), y = ByName.Beta()) === (:alpha, :beta)
+    @test ByName.swapped(y = ByName.Alpha(), x = ByName.Beta()) === (:beta, :alpha)
+
+    @test_throws MethodError ByName.pair(z = 1)
+    @test_throws MethodError ByName.pair(x = 1)
+    @test_throws MethodError ByName.scaled(x = 2, bogus = 5)
+    @test_throws ArgumentError ByName.ambiguous(x = ByName.Alpha(), y = ByName.Beta())
+
+    # a vararg tail behaves as it does positionally: empty unless positionals fill it
+    @test ByName.slurp(x = 1) === (1, ())
+    @test ByName.slurp(1, 2) === (1, (2,))
+    @test_throws MethodError ByName.slurp(rest = 1)
+    @test_throws MethodError ByName.slurp(x = 1, rest = 2)
+
+    @test !hasmethod(ByName.pair, Tuple{Int,Int}, (:bogus,))
+    @test hasmethod(ByName.scaled, Tuple{Int}, (:scale,))
+end
