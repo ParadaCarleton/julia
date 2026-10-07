@@ -1,0 +1,15 @@
+name: Build and test
+on:
+  pull_request:
+  workflow_dispatch:
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - run: make -j$(nproc)
+      - run: ./julia -e 'Base.runtests(["all"]; ncores=Sys.CPU_THREADS)'
