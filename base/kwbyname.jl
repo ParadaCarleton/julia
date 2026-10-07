@@ -65,33 +65,51 @@ function reorder(args::Tuple, kwargs::NamedTuple, order::AbstractVector{Symbol})
 end
 
 """
-    fitted_order(m::Method, f, args::Tuple, kwargs::NamedTuple) -> Union{Vector{Symbol},Nothing}
+    keyword_types(kwtype::Type) -> NamedTuple
 
-[`name_order`](@ref) for `m`, kept only when the reordered arguments also match
-`m`'s signature.
+The declared type of each keyword argument of a `NamedTuple` type, keyed by name.
 """
-function fitted_order(m::Method, @nospecialize(f), args::Tuple, kwargs::NamedTuple)::Union{Vector{Symbol},Nothing}
-    order = name_order(m, length(args), keys(kwargs))
+function keyword_types(@nospecialize(kwtype::Type))::NamedTuple
+    names, types = kwtype.parameters
+    return NamedTuple{names}(Tuple(types.parameters))
+end
+
+"""
+    fitted_order(m::Method, ftype::Type, argtypes::Tuple, kwargtypes::NamedTuple) -> Union{Vector{Symbol},Nothing}
+
+[`name_order`](@ref) for `m`, kept only when the reordered argument types also
+match `m`'s signature.
+"""
+function fitted_order(m::Method, @nospecialize(ftype::Type), argtypes::Tuple, kwargtypes::NamedTuple)::Union{Vector{Symbol},Nothing}
+    order = name_order(m, length(argtypes), keys(kwargtypes))
     if order === nothing
         return nothing
     end
-    reordered = reorder(args, kwargs, order)
-    if !(Tuple{Core.Typeof(f), map(Core.Typeof, reordered)...} <: m.sig)
+    reordered = (argtypes..., (getfield(kwargtypes, name) for name in order)...)
+    if !(Tuple{ftype, reordered...} <: m.sig)
         return nothing
     end
     return order
 end
 
 """
-    by_name_orders(kwargs::NamedTuple, f, args::Tuple)
+    by_name_orders(ftype::Type, argtypes::Tuple, kwargtypes::NamedTuple, world::Integer)
 
-The distinct [`fitted_order`](@ref)s over all methods of `f`, one ragged entry per
-candidate. One entry means the call resolves; more than one means the names are
-ambiguous.
+The distinct [`fitted_order`](@ref)s over all methods of `ftype` visible in
+`world`, one ragged entry per candidate. One entry means the call resolves; more
+than one means the names are ambiguous.
+
+Every input is a type, so the answer depends only on the argument types and on
+the method table of `ftype` — the inputs ordinary dispatch already consumes.
 """
-function by_name_orders(kwargs::NamedTuple, @nospecialize(f), args::Tuple)::AbstractVector
-    return unique([order for order in (fitted_order(m, f, args, kwargs) for m in methods(f))
-                   if order !== nothing])
+function by_name_orders(@nospecialize(ftype::Type), argtypes::Tuple, kwargtypes::NamedTuple, world::Integer)::AbstractVector
+    matches = _methods_by_ftype(Tuple{ftype, Vararg{Any}}, -1, UInt(world))
+    if !isa(matches, Vector)
+        return Vector{Symbol}[]
+    end
+    orders = (fitted_order((match::Core.MethodMatch).method, ftype, argtypes, kwargtypes)
+              for match in matches)
+    return unique([order for order in orders if order !== nothing])
 end
 
 """
@@ -100,7 +118,9 @@ end
 Whether [`kwcall_by_name`](@ref) completes `f(args...; kwargs...)`.
 """
 function by_name_applicable(kwargs::NamedTuple, @nospecialize(f), args::Tuple)::Bool
-    return length(by_name_orders(kwargs, f, args)) == 1
+    orders = by_name_orders(Core.Typeof(f), map(Core.Typeof, args),
+                            map(Core.Typeof, kwargs), get_world_counter())
+    return length(orders) == 1
 end
 
 """
@@ -128,7 +148,8 @@ Throws the `MethodError` the call would otherwise have raised when no method of
 """
 function kwcall_by_name(kwargs::NamedTuple, @nospecialize(f), args::Tuple)
     @noinline
-    orders = by_name_orders(kwargs, f, args)
+    orders = by_name_orders(Core.Typeof(f), map(Core.Typeof, args),
+                            map(Core.Typeof, kwargs), get_world_counter())
     if isempty(orders)
         throw(MethodError(Core.kwcall, (kwargs, f, args...), tls_world_age()))
     end
@@ -147,12 +168,62 @@ function kwcall_by_name(kwargs::NamedTuple, @nospecialize(f), args::Tuple)
 end
 
 """
-    Core.kwcall(kwargs::NamedTuple, f, args...)
+    kwcall_by_name_body(order::AbstractVector{Symbol}, names::Tuple{Vararg{Symbol}}) -> Expr
 
-Fallback for a keyword call no keyword sorter accepts: resolve the keywords
-against the positional parameter names of `f`'s methods.
+The resolved call, reading each named parameter straight out of `kwargs`. Any
+keyword left over after `order` is consumed goes back through `Core.kwcall` for a
+real keyword sorter to handle.
 """
-function Core.kwcall(kwargs::NamedTuple, @nospecialize(f), @nospecialize(args...))::Any
-    @noinline
+function kwcall_by_name_body(order::AbstractVector{Symbol}, names::Tuple{Vararg{Symbol}}, argtypes::Tuple)::Expr
+    # Splatting `args` would lower to `_apply_iterate` and lose inference; the
+    # arity is known here, so read each slot out by position instead.
+    positional = ((Expr(:call, GlobalRef(Core, :getfield), :args, slot) for slot in eachindex(argtypes))...,
+                  (Expr(:call, GlobalRef(Core, :getfield), :kwargs, QuoteNode(name)) for name in order)...)
+    rest = filter(name -> !(name in order), names)
+    if isempty(rest)
+        return Expr(:return, Expr(:call, :f, positional...))
+    end
+    leftover = Expr(:call, GlobalRef(Base, :structdiff), :kwargs, NamedTuple{(order...,)})
+    return Expr(:return, Expr(:call, GlobalRef(Core, :kwcall), leftover, :f, positional...))
+end
+
+"""
+    kwcall_by_name_generator(world, source, self, kwtype, ftype, given...) -> CodeInfo
+
+Resolve a by-name keyword call during inference and emit the direct call it
+stands for. The generated code carries a method-table edge for `ftype`, so
+defining a further method of that function invalidates it.
+
+`given` holds one type per positional argument, the form a generator receives a
+vararg tail in — not the tuple type of the tail.
+
+Calls that do not resolve to exactly one parameter order are left to
+[`kwcall_by_name`](@ref), which raises the error describing why. So is anything
+this generator cannot see through, since a generator that throws degrades to the
+run-time body without saying so.
+"""
+function kwcall_by_name_generator(world::Integer, source::Method, @nospecialize(self), @nospecialize(kwtype),
+                                  @nospecialize(ftype), @nospecialize(given))::Any
+    argnames = Core.svec(:self, :kwargs, :f, :args)
+    stub = Core.GeneratedFunctionStub(identity, argnames, Core.svec())
+    deferred = Expr(:return, Expr(:call, GlobalRef(Base, :kwcall_by_name), :kwargs, :f, :args))
+    if !isa(kwtype, DataType) || !(kwtype <: NamedTuple) || !isa(ftype, DataType)
+        return stub(world, source, deferred)
+    end
+    argtypes = Tuple(given)
+    orders = by_name_orders(ftype, argtypes, keyword_types(kwtype), world)
+    if length(orders) != 1
+        return stub(world, source, deferred)
+    end
+    code = stub(world, source, kwcall_by_name_body(only(orders), kwtype.parameters[1], argtypes))
+    # Resolution reads the method table of `ftype`; this edge invalidates it on change.
+    (code::CodeInfo).edges = Any[Tuple{ftype, Vararg{Any}}, Core.methodtable]
+    return code
+end
+
+# Fallback for a keyword call no keyword sorter accepts. The generator resolves it
+# during inference; the body below serves whenever the generator cannot run.
+@eval function Core.kwcall(kwargs::NamedTuple, f, args...)
+    $(Expr(:meta, :generated, kwcall_by_name_generator))
     return kwcall_by_name(kwargs, f, args)
 end
