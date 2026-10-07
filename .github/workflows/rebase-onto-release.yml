@@ -7,15 +7,11 @@ permissions:
 jobs:
   rebase:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        branch: [master, sysimage-prelink]
     steps:
       - uses: actions/checkout@v4
-        with: { ref: "${{ matrix.branch }}", fetch-depth: 0, token: "${{ secrets.REBASE_TOKEN }}" }
+        with: { ref: master, fetch-depth: 0, token: "${{ secrets.REBASE_TOKEN }}" }
       - name: Rebase onto newest stable tag
-        env: { BRANCH: "${{ matrix.branch }}" }
+        env: { BRANCH: master }
         run: |
           set -euo pipefail
           git config user.name github-actions && git config user.email github-actions@users.noreply.github.com
