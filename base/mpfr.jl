@@ -423,7 +423,7 @@ float(::Type{BigInt}) = BigFloat
 BigFloat(x::Real, r::RoundingMode; precision::Integer=_precision_with_base_2(BigFloat)) =
     BigFloat(x, convert(MPFRRoundingMode, r); precision=precision)::BigFloat
 BigFloat(x::AbstractString, r::RoundingMode; precision::Integer=_precision_with_base_2(BigFloat)) =
-    BigFloat(x, convert(MPFRRoundingMode, r); precision=precision)
+    BigFloat(x, convert(MPFRRoundingMode, r); precision=precision)::BigFloat
 
 ## BigFloat -> Integer
 _unchecked_cast(T, x::BigFloat, r::RoundingMode) = _unchecked_cast(T, x, convert(MPFRRoundingMode, r))
