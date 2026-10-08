@@ -13,3 +13,5 @@ jobs:
       - uses: actions/checkout@v4
       - run: make -j$(nproc)
       - run: ./julia -e 'Base.runtests(["all"]; ncores=Sys.CPU_THREADS)'
+        env:
+          JULIA_TEST_VERBOSE_LOGS_DIR: ${{ runner.temp }}
