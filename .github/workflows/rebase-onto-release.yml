@@ -10,8 +10,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { ref: master, fetch-depth: 0, token: "${{ secrets.REBASE_TOKEN }}" }
+      - uses: julia-actions/setup-julia@v2
       - name: Rebase onto newest stable tag
-        env: { BRANCH: master }
         run: |
           set -euo pipefail
           git config user.name github-actions && git config user.email github-actions@users.noreply.github.com
@@ -19,6 +19,11 @@ jobs:
           latest=$(git tag -l 'v*' | grep -xE 'v[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -1)
           base=$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' --exclude '*-*' HEAD)
           echo "base=$base latest=$latest"
-          if [ "$base" = "$latest" ]; then exit 0; fi
-          git rebase --onto "$latest" "$base"
-          git push --force-with-lease origin "HEAD:$BRANCH"
+          if [ "$base" != "$latest" ]; then git rebase --onto "$latest" "$base"; fi
+      - name: Vendor the latest releases of the stdlibs in stdlib/vendored.toml
+        run: |
+          set -euo pipefail
+          julia --startup-file=no contrib/vendor_stdlibs.jl
+          git add -A stdlib
+          if ! git diff --cached --quiet; then git commit -m "stdlib: update vendored packages"; fi
+      - run: git push --force-with-lease origin HEAD:master

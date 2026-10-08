@@ -20,8 +20,8 @@ jobs:
           GH_TOKEN: "${{ github.token }}"
         run: |
           git fetch --depth=1 origin ${{ github.base_ref }}
-          OLD_FILES=$(git diff-index --name-only --diff-filter=ad FETCH_HEAD)
-          NEW_FILES=$(git diff-index --name-only --diff-filter=d FETCH_HEAD)
+          OLD_FILES=$(git diff-index --name-only --diff-filter=ad FETCH_HEAD -- . ":(exclude,attr:linguist-vendored)")
+          NEW_FILES=$(git diff-index --name-only --diff-filter=d FETCH_HEAD -- . ":(exclude,attr:linguist-vendored)")
 
           # This is necessary because the typos command interprets the
           # empty string as "check all files" rather than "check no files".
