@@ -255,16 +255,28 @@ function show_convert_error(io::IO, ex::MethodError, arg_types_param)
     end
 end
 
+is_keyword_slurp(name::Symbol) = endswith(String(name), "...")
+
 """
     nameable_keywords(f) -> Vector{Symbol}
 
 Every name a call to `f` may supply by keyword: the keyword arguments each method
 declares, together with its positional parameters, which a call may also name.
+A slurped `kwargs...` is not a name and is excluded; see `accepts_any_keyword`.
 """
 function nameable_keywords(@nospecialize(f))
     named = [name for m in methods(f)
-             for name in vcat(kwarg_decl(m), nameable_parameters(m))]
+             for name in vcat(kwarg_decl(m), nameable_parameters(m)) if !is_keyword_slurp(name)]
     return unique(named)
+end
+
+"""
+    accepts_any_keyword(f) -> Bool
+
+Whether some method of `f` slurps keyword arguments (`kwargs...`).
+"""
+function accepts_any_keyword(@nospecialize(f))
+    return any(is_keyword_slurp, name for m in methods(f) for name in kwarg_decl(m))
 end
 
 """
@@ -289,11 +301,11 @@ Offer a correction for each given keyword name that no method of `f` accepts but
 that closely resembles a name some method does.
 """
 function show_keyword_suggestions(io::IO, @nospecialize(f), kwargs)
-    accepted = nameable_keywords(f)
     # A method slurping keywords accepts every name, so nothing is misspelled.
-    if any(name -> endswith(String(name), "..."), accepted)
+    if accepts_any_keyword(f)
         return nothing
     end
+    accepted = nameable_keywords(f)
     for (given, _) in kwargs
         if given in accepted
             continue
