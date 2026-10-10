@@ -11,9 +11,19 @@ jobs:
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
       - run: make -j$(nproc)
+      - name: Choose tests
+        run: |
+          tests="all"
+          if [ "${{ github.event_name }}" = pull_request ] && git diff --quiet HEAD^1 HEAD -- Compiler src base/compiler test/compiler test/compileall.jl; then
+            tests="all -compiler -compileall"
+          fi
+          echo "TESTS=$tests" >> "$GITHUB_ENV"
       - run: |
           (while true; do echo "MEM $(date +%T) $(free -m | awk '/Mem:/ {print $3 "/" $2 " MB used, " $7 " MB available"}') load=$(cut -d' ' -f1 /proc/loadavg)"; sleep 60; done) &
-          ./julia -e 'Base.runtests(["all"]; ncores=2)'
+          ./julia -e 'Base.runtests(split(ENV["TESTS"]); ncores=2)'
         env:
           JULIA_TEST_VERBOSE_LOGS_DIR: ${{ runner.temp }}
+          JULIA_TEST_MAXRSS_MB: 3500
