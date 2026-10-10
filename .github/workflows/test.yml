@@ -12,6 +12,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: make -j$(nproc)
-      - run: ./julia -e 'Base.runtests(["all"]; ncores=Sys.CPU_THREADS)'
+      - run: |
+          (while true; do echo "MEM $(date +%T) $(free -m | awk '/Mem:/ {print $3 "/" $2 " MB used, " $7 " MB available"}') load=$(cut -d' ' -f1 /proc/loadavg)"; sleep 60; done) &
+          ./julia -e 'Base.runtests(["all"]; ncores=2)'
         env:
           JULIA_TEST_VERBOSE_LOGS_DIR: ${{ runner.temp }}
