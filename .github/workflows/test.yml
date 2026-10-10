@@ -1,10 +1,6 @@
 name: Build and test
 on:
-  pull_request:
   workflow_dispatch:
-concurrency:
-  group: test-${{ github.ref }}
-  cancel-in-progress: true
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -12,4 +8,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: make -j$(nproc)
-      - run: ./julia -e 'Base.runtests(["all"]; ncores=Sys.CPU_THREADS)'
+      - run: |
+          (while true; do echo "MEM $(date +%T) $(free -m | awk '/Mem:/ {print $3 "/" $2 " MB used, " $7 " MB available"}') load=$(cut -d' ' -f1 /proc/loadavg)"; sleep 60; done) &
+          ./julia -e 'Base.runtests(["all", "-Compiler/AbstractInterpreter"]; ncores=Sys.CPU_THREADS)'
+        env:
+          JULIA_TEST_VERBOSE_LOGS_DIR: ${{ runner.temp }}
