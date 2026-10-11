@@ -172,6 +172,9 @@ end
 ## keyword arg lowering generates calls to this ##
 function kwerr(kw, args::Vararg{Any,N}) where {N}
     @noinline
+    if isdefined(@__MODULE__, :kwcall_by_name)
+        return kwcall_by_name(kw, first(args), tail(args))
+    end
     throw(MethodError(Core.kwcall, (kw, args...), tls_world_age()))
 end
 

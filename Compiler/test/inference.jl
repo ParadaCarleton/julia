@@ -5361,16 +5361,16 @@ function fapplicable end
 gapplicable() = Val(applicable(fapplicable))
 gapplicable(x) = Val(applicable(fapplicable; x))
 @test only(Base.return_types(gapplicable, ())) === Val{false}
-@test only(Base.return_types(gapplicable, (Int,))) === Val{false}
+@test gapplicable(1) === Val(false) # keyword `applicable` resolves at run time
 fapplicable() = 1
 @test only(Base.return_types(gapplicable, ())) === Val{true}
-@test only(Base.return_types(gapplicable, (Int,))) === Val{false}
+@test gapplicable(1) === Val(false) # keyword `applicable` resolves at run time
 Base.delete_method(which(fapplicable, ()))
 @test only(Base.return_types(gapplicable, ())) === Val{false}
-@test only(Base.return_types(gapplicable, (Int,))) === Val{false}
+@test gapplicable(1) === Val(false) # keyword `applicable` resolves at run time
 fapplicable(; x) = x
 @test only(Base.return_types(gapplicable, ())) === Val{true}
-@test only(Base.return_types(gapplicable, (Int,))) === Val{true}
+@test gapplicable(1) === Val(true) # keyword `applicable` resolves at run time
 @test only(Base.return_types(()) do; applicable(); end) === Union{}
 @test only(Base.return_types((Any,)) do x; Val(applicable(x...)); end) == Val
 @test only(Base.return_types((Tuple{Vararg{Int}},)) do x; Val(applicable(+, 1, 2, x...)); end) == Val # could be improved to Val{true}
