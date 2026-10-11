@@ -9,6 +9,13 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
+    env:
+      SHARD: ${{ matrix.shard }}
+      SHARDS: 6
     steps:
       - uses: actions/checkout@v4
         with:
@@ -23,7 +30,11 @@ jobs:
           echo "TESTS=$tests" >> "$GITHUB_ENV"
       - run: |
           (while true; do echo "MEM $(date +%T) $(free -m | awk '/Mem:/ {print $3 "/" $2 " MB used, " $7 " MB available"}') load=$(cut -d' ' -f1 /proc/loadavg)"; sleep 60; done) &
-          ./julia -e 'Base.runtests(split(ENV["TESTS"]); ncores=2)'
+          ./julia -e '
+            include(joinpath(Sys.BINDIR, Base.DATAROOTDIR, "julia", "test", "choosetests.jl"))
+            shard = choosetests(split(ENV["TESTS"])).tests[parse(Int, ENV["SHARD"]):parse(Int, ENV["SHARDS"]):end]
+            println("Shard ", ENV["SHARD"], ": ", join(shard, " "))
+            Base.runtests(shard; ncores=2)'
         env:
           JULIA_TEST_VERBOSE_LOGS_DIR: ${{ runner.temp }}
           JULIA_TEST_MAXRSS_MB: 3500
@@ -44,7 +55,4 @@ jobs:
       - if: env.RUN == 'true'
         run: make -j$(nproc)
       - if: env.RUN == 'true'
-        run: |
-          (while true; do echo "MEM $(date +%T) $(free -m | awk '/Mem:/ {print $3 "/" $2 " MB used, " $7 " MB available"}')"; sleep 30; done) &
-          /usr/bin/time -v ./julia -e 'Base.runtests(["compileall"]; ncores=1)' 2>&1 | tee time.log
-          echo "PEAK $(grep 'Maximum resident' time.log)"
+        run: ./julia -e 'Base.runtests(["compileall"]; ncores=1)'
