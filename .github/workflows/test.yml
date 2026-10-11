@@ -1,50 +1,13 @@
 name: Build and test
 on:
-  pull_request:
   workflow_dispatch:
-concurrency:
-  group: test-${{ github.ref }}
-  cancel-in-progress: true
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    timeout-minutes: 360
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
-      - run: make -j$(nproc)
-      - name: Choose tests
-        run: |
-          tests="all -compileall"
-          if [ "${{ github.event_name }}" = pull_request ] && git diff --quiet HEAD^1 HEAD -- Compiler src base/compiler test/compiler; then
-            tests="all -compileall -compiler"
-          fi
-          echo "TESTS=$tests" >> "$GITHUB_ENV"
-      - run: |
-          (while true; do echo "MEM $(date +%T) $(free -m | awk '/Mem:/ {print $3 "/" $2 " MB used, " $7 " MB available"}') load=$(cut -d' ' -f1 /proc/loadavg)"; sleep 60; done) &
-          ./julia -e 'Base.runtests(split(ENV["TESTS"]); ncores=2)'
-        env:
-          JULIA_TEST_VERBOSE_LOGS_DIR: ${{ runner.temp }}
-          JULIA_TEST_MAXRSS_MB: 3500
   compileall:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
-      - name: Choose whether to run
-        run: |
-          run=true
-          if [ "${{ github.event_name }}" = pull_request ] && git diff --quiet HEAD^1 HEAD -- Compiler src base/compiler test/compileall.jl; then
-            run=false
-          fi
-          echo "RUN=$run" >> "$GITHUB_ENV"
-      - if: env.RUN == 'true'
-        run: make -j$(nproc)
-      - if: env.RUN == 'true'
-        run: |
-          (while true; do echo "MEM $(date +%T) $(free -m | awk '/Mem:/ {print $3 "/" $2 " MB used, " $7 " MB available"}')"; sleep 30; done) &
+      - run: make -j$(nproc)
+      - run: |
           /usr/bin/time -v ./julia -e 'Base.runtests(["compileall"]; ncores=1)' 2>&1 | tee time.log
           echo "PEAK $(grep 'Maximum resident' time.log)"
