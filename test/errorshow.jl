@@ -1735,6 +1735,7 @@ module KeywordSuggestions
     scaled(x; scale = 1) = x * scale
     pair(x, y) = (x, y)
     slurpy(x::Marker; kws...) = (x, kws)
+    unnamed(::Int, y) = y
 end
 
 @testset "keyword argument suggestions" begin
@@ -1760,6 +1761,8 @@ end
     # a slurped `kwargs...` is not a keyword name
     @test issetequal(Base.nameable_keywords(KeywordSuggestions.scaled), [:scale, :x])
     @test Base.nameable_keywords(KeywordSuggestions.slurpy) == [:x]
+    # an unnamed parameter cannot be passed by name, so no placeholder is offered
+    @test Base.nameable_keywords(KeywordSuggestions.unnamed) == [:y]
     @test !Base.accepts_any_keyword(KeywordSuggestions.scaled)
     @test Base.accepts_any_keyword(KeywordSuggestions.slurpy)
 end
