@@ -1535,13 +1535,14 @@ end
 """
     visible_names(scope::Module) -> Vector{Symbol}
 
-Every name code in `scope` can write unqualified: the module's own bindings
-together with what `Base` and `Core` export. Compiler-generated names are left
-out, since no one can have meant to type one.
+Every name code in `scope` can write unqualified: the module's own bindings,
+what each module it `using`s exports (`Base` included unless the module is a
+`baremodule`), and what `Core` exports. Compiler-generated names are left out,
+since no one can have meant to type one.
 """
 function visible_names(scope::Module)
-    inherited = scope in (Base, Core) ? Symbol[] : vcat(names(Base), names(Core))
-    reachable = vcat(names(scope; all = true, imported = true), inherited)
+    used = [name for mod in ccall(:jl_module_usings, Any, (Any,), scope) for name in names(mod::Module)]
+    reachable = vcat(names(scope; all = true, imported = true), used, names(Core))
     return unique(name for name in reachable if !startswith(String(name), "#"))
 end
 
