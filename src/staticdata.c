@@ -86,7 +86,9 @@ External links:
 #else
 #include <dlfcn.h>
 #include <sys/mman.h>
+#if defined(_OS_LINUX_) || defined(_OS_FREEBSD_)
 #include <link.h>
+#endif
 #include <fcntl.h>
 #include <unistd.h>
 #endif
@@ -3652,6 +3654,7 @@ static void reactive_dump_heap(const char *path)
 
 // ── the page write: the base ───────────────────────────────────────────
 
+#if defined(_OS_LINUX_) || defined(_OS_FREEBSD_)
 struct reactive_phdr_query {
     uintptr_t addr;
     uintptr_t file_off;
@@ -3674,6 +3677,7 @@ static int reactive_phdr_callback(struct dl_phdr_info *info, size_t size, void *
     }
     return 0;
 }
+#endif
 
 // Read a list of positions, delta-coded as jl_write_offsetlist writes them.
 static const uint8_t *reactive_base_read_positions(const uint8_t *cur, arraylist_t *out) JL_NOTSAFEPOINT
@@ -3729,6 +3733,7 @@ static void reactive_base_lists_from(const char *relocs, size_t size)
 // lists. Answers 0 when the base has no file (a compressed image, or no
 // image), and the save writes whole.
 // The file that holds the blob at `addr`, and the blob's offset in it.
+#if defined(_OS_LINUX_) || defined(_OS_FREEBSD_)
 static int reactive_blob_file(const void *addr, const char **fname, size_t *file_off) JL_NOTSAFEPOINT
 {
     Dl_info info;
@@ -3742,6 +3747,14 @@ static int reactive_blob_file(const void *addr, const char **fname, size_t *file
     *file_off = q.file_off;
     return 1;
 }
+#else
+// Without ELF program headers the file offset of the blob is unknown, and a
+// save writes the whole image.
+static int reactive_blob_file(const void *addr, const char **fname, size_t *file_off) JL_NOTSAFEPOINT
+{
+    return 0;
+}
+#endif
 
 static int reactive_base_file_mapped = 0;
 
