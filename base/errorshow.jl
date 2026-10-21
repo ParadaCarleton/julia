@@ -1397,8 +1397,7 @@ what each module it `using`s exports (`Base` included unless the module is a
 since no one can have meant to type one.
 """
 function visible_names(scope::Module)
-    used = [name for mod in ccall(:jl_module_usings, Any, (Any,), scope) for name in names(mod::Module)]
-    reachable = vcat(names(scope; all = true, imported = true), used, names(Core))
+    reachable = names(scope; all = true, imported = true, usings = true)
     return unique(name for name in reachable if !startswith(String(name), "#"))
 end
 
