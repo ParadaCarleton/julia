@@ -262,11 +262,13 @@ is_keyword_slurp(name::Symbol) = endswith(String(name), "...")
 
 Every name a call to `f` may supply by keyword: the keyword arguments each method
 declares, together with its positional parameters, which a call may also name.
-A slurped `kwargs...` is not a name and is excluded; see `accepts_any_keyword`.
+A slurped `kwargs...` is not a name and is excluded; see `accepts_any_keyword`, as are
+compiler-generated placeholders such as `#unused#` for an unnamed parameter.
 """
 function nameable_keywords(@nospecialize(f))
     named = [name for m in methods(f)
-             for name in vcat(kwarg_decl(m), nameable_parameters(m)) if !is_keyword_slurp(name)]
+             for name in vcat(kwarg_decl(m), nameable_parameters(m))
+             if !is_keyword_slurp(name) && !startswith(String(name), "#")]
     return unique(named)
 end
 
