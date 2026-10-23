@@ -413,6 +413,7 @@ module ByName
     ambiguous(y::Beta, x::Alpha) = :second
     slurp(x, rest...) = (x, rest)
     renamed(a, b) = (:first, a, b)
+    Core.kwcall(kwargs, ::Alpha, x::Integer) = (kwargs, x)
 end
 
 @testset "positional arguments passed by name" begin
@@ -439,6 +440,10 @@ end
 
     @test !hasmethod(ByName.pair, Tuple{Int,Int}, (:bogus,))
     @test hasmethod(ByName.scaled, Tuple{Int}, (:scale,))
+
+    # a hand-written sorter with an untyped keyword slot outranks the fallback
+    @test ByName.Alpha()(1; k = 2) === ((k = 2,), 1)
+    @test which(Core.kwcall, (Any, Any, Any)).sig === Base.KWCALL_BY_NAME_SIG
 
     # Resolution belongs to inference. A generator that stops resolving still
     # answers correctly through the run-time body, so only inference catches it.
