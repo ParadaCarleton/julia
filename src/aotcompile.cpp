@@ -1129,9 +1129,8 @@ static GlobalVariable *emit_ptls_table(Module &M, Type *T_size, Type *T_ptr) {
 
 // See src/processor.h for documentation about this table. Corresponds to jl_image_header_t.
 static GlobalVariable *emit_image_header(Module &M, unsigned threads, unsigned nfvars, unsigned ngvars) {
-    constexpr uint32_t version = 1;
     std::array<uint32_t, 4> header{
-        version,
+        JL_IMAGE_FORMAT_VERSION,
         threads,
         nfvars,
         ngvars,
@@ -2431,6 +2430,8 @@ void jl_dump_native_impl(void *native_code,
                                             ConstantArray::get(entry_thunks_ty, entry_thunk_ptrs),
                                             "jl_image_entry_thunks");
 
+            static_assert(sizeof(jl_image_pointers_t) == 8 * sizeof(void*),
+                          "jl_image_pointers matches jl_image_pointers_t; bump JL_IMAGE_FORMAT_VERSION on change");
             AT = ArrayType::get(T_psize, 8);
             auto pointers = new GlobalVariable(metadataM, AT, false,
                                             GlobalVariable::ExternalLinkage,

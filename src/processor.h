@@ -95,11 +95,13 @@ struct _jl_image_t {
     void **entry_targets;
 };
 
+// The image format version; it changes whenever `jl_image_pointers_t` changes shape.
+#define JL_IMAGE_FORMAT_VERSION 2
+
 // The header for each image
 // Details important counts about the image
 typedef struct {
-    // The version of the image format
-    // Most up-to-date version is 1
+    // The version of the image format, `JL_IMAGE_FORMAT_VERSION`
     uint32_t version;
     // The number of shards in this image
     uint32_t nshards;
