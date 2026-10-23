@@ -1809,3 +1809,11 @@ if !Sys.iswindows() && !running_under_rr()
         end
     end
 end
+
+@testset "choosetests leaves vendored stdlibs to their upstream test suites" begin
+    chooser = Module()
+    Base.include(chooser, joinpath(@__DIR__, "choosetests.jl"))
+    tests = chooser.choosetests(["stdlib"]).tests
+    @test !isempty(tests)
+    @test isempty([test for test in tests if first(split(test, '/')) in chooser.VENDORED_STDLIBS])
+end
