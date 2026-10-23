@@ -1513,6 +1513,25 @@ end
     end
 end
 
+@testset "an image of the older format is refused" begin
+    # Version 1 images export a shorter `jl_image_pointers`; reading one must stop at the header.
+    sysname = unsafe_string(Base.JLOptions().image_file)
+    pointers = Libdl.dlsym(Libdl.dlopen(sysname), :jl_image_pointers)
+    header = copy(unsafe_wrap(Vector{UInt8}, unsafe_load(Ptr{Ptr{UInt8}}(pointers)), 16))
+    bytes = read(sysname)
+    found = findall(header, bytes)
+    @test length(found) == 1
+    bytes[first(only(found)):first(only(found)) + 3] = reinterpret(UInt8, [UInt32(1)])
+    mktempdir() do dir
+        old = joinpath(dir, "old" * splitext(sysname)[2])
+        write(old, bytes)
+        p = run(pipeline(ignorestatus(`$(Base.julia_cmd()) -J $old -e 0`);
+                         stdout = devnull, stderr = "$(dir)/err"), wait = true)
+        @test p.exitcode == 1
+        @test occursin("Image file is not compatible with this version of Julia", read("$(dir)/err", String))
+    end
+end
+
 @testset "the system image holds `nothing`, the booleans and the symbols" begin
     exename = `$(Base.julia_cmd())`
     # A system image holds these itself, so that every field which points at
