@@ -5,7 +5,7 @@ Signature of the `Core.kwcall` method that resolves positional arguments passed
 by name. It matches every keyword call, so reflection that asks whether a keyword
 sorter exists compares against it.
 """
-const KWCALL_BY_NAME_SIG = Tuple{typeof(Core.kwcall), NamedTuple, Any, Vararg{Any}}
+const KWCALL_BY_NAME_SIG = Tuple{typeof(Core.kwcall), Any, Any, Vararg{Any}}
 
 """
     nameable_parameters(m::Method) -> Vector{Symbol}
@@ -139,13 +139,17 @@ function resolves_without_fallback(kwargs::NamedTuple, args::Tuple)::Bool
 end
 
 """
-    kwcall_by_name(kwargs::NamedTuple, f, args::Tuple)
+    kwcall_by_name(kwargs, f, args::Tuple)
 
 Complete `f(args...; kwargs...)` by treating keyword arguments that name
 positional parameters of `f` as those arguments, then dispatching normally.
 Throws the `MethodError` the call would otherwise have raised when no method of
 `f` can be completed this way.
 """
+function kwcall_by_name(@nospecialize(kwargs), @nospecialize(f), args::Tuple)
+    @noinline
+    throw(MethodError(Core.kwcall, (kwargs, f, args...), tls_world_age()))
+end
 function kwcall_by_name(kwargs::NamedTuple, @nospecialize(f), args::Tuple)
     @noinline
     orders = by_name_orders(Core.Typeof(f), map(Core.Typeof, args),
@@ -223,7 +227,8 @@ end
 
 # Fallback for a keyword call no keyword sorter accepts. The generator resolves it
 # during inference; the body below serves whenever the generator cannot run.
-@eval function Core.kwcall(kwargs::NamedTuple, f, args...)
+# `kwargs` stays untyped so a user `Core.kwcall(kw, ::T, ...)` method is strictly more specific.
+@eval function Core.kwcall(kwargs, f, args...)
     $(Expr(:meta, :generated, kwcall_by_name_generator))
     return kwcall_by_name(kwargs, f, args)
 end
