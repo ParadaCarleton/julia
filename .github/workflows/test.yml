@@ -20,10 +20,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
-      # precompile.jl's Multiversioning test needs more than one sysimage target, as on Buildkite.
-      - run: make -j$(nproc) JULIA_CPU_TARGET='generic;sandybridge,-xsaveopt,clone_all'
+      # The release targets: precompile.jl needs several, and math.jl expects FMA in Base when the CPU has it.
+      - run: make -j$(nproc) JULIA_CPU_TARGET='generic;sandybridge,-xsaveopt,clone_all;haswell,-rdrnd,base(1);x86-64-v4,-rdrnd,base(1)'
       # The runner's resolver fails reverse lookups that Sockets' getnameinfo test expects to succeed.
       - run: echo '255.255.255.0 netmask' | sudo tee -a /etc/hosts
+      # rr refuses to record at the runner's default perf_event_paranoid of 4.
+      - run: sudo sysctl kernel.perf_event_paranoid=1
       # threads.jl runs in its own step: its BLAS test needs JULIA_CPU_THREADS to cover every CPU.
       - name: Choose tests
         run: |
