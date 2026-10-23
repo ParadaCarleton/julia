@@ -20,12 +20,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
-      - run: make -j$(nproc)
+      # precompile.jl's Multiversioning test needs more than one sysimage target, as on Buildkite.
+      - run: make -j$(nproc) JULIA_CPU_TARGET='generic;sandybridge,-xsaveopt,clone_all'
+      # threads.jl runs in its own step: its BLAS test needs JULIA_CPU_THREADS to cover every CPU.
       - name: Choose tests
         run: |
-          tests="all -compileall"
+          tests="all -compileall -threads"
           if [ "${{ github.event_name }}" = pull_request ] && git diff --quiet HEAD^1 HEAD -- Compiler src base/compiler test/compiler; then
-            tests="all -compileall -compiler"
+            tests="$tests -compiler"
           fi
           echo "TESTS=$tests" >> "$GITHUB_ENV"
       - run: |
@@ -38,6 +40,14 @@ jobs:
         env:
           JULIA_TEST_VERBOSE_LOGS_DIR: ${{ runner.temp }}
           JULIA_TEST_MAXRSS_MB: 3500
+      - if: ${{ !cancelled() && matrix.shard == 1 }}
+        run: ./julia -e 'Base.runtests(["threads"]; ncores=Sys.EFFECTIVE_CPU_THREADS)'
+      - if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-${{ matrix.shard }}
+          path: ${{ runner.temp }}/*.log
+          if-no-files-found: ignore
   compileall:
     runs-on: ubuntu-latest
     timeout-minutes: 120
