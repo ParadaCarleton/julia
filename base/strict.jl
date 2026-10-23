@@ -14,7 +14,8 @@ function showerror(io::IO, e::StrictModeError)
     print(io, "StrictModeError: type piracy in strict module ", e.mod, "\n  ")
     show(io, e.sig)
     print(io, "\nowns none of: ")
-    join(io, unique!(_type_owners!(Module[], e.sig)), ", ")
+    home = _root_module(e.mod)
+    join(io, unique(m for m in _type_owners!(Module[], e.sig) if _root_module(m) !== home), ", ")
     print(io, "\nDefine this method in a module that owns the function or one of the ",
               "argument types, or drop `strict=true`.")
 end
@@ -64,16 +65,48 @@ function _type_owners!(out::AbstractVector{Module}, @nospecialize(T))
 end
 
 """
+    _is_owned(home, T) -> Bool
+
+Whether `T` excludes every value whose type mentions only types declared outside
+`home`. As in Aqua.jl, a type is owned when its name or one of its parameters is.
+A `Union` is owned only when every member is; a `Vararg` only when its length is
+fixed and positive, since `Vararg{T}` also matches zero arguments.
+"""
+function _is_owned(home::Module, @nospecialize(T))
+    if T isa DataType
+        if _root_module(T.name.module) === home
+            return true
+        end
+        for p in T.parameters
+            if _is_owned(home, p)
+                return true
+            end
+        end
+        return false
+    elseif T isa UnionAll
+        return _is_owned(home, T.body)
+    elseif T isa Union
+        return _is_owned(home, T.a) && _is_owned(home, T.b)
+    elseif T isa TypeVar
+        return _is_owned(home, T.ub)
+    elseif T isa Core.TypeofVararg
+        return isdefined(T, :N) && T.N isa Int && T.N > 0 && _is_owned(home, T.T)
+    else
+        return _is_owned(home, typeof(T))  # a value used as a type parameter
+    end
+end
+
+"""
     _is_piracy(mod, sig) -> Bool
 
-Whether defining a method with signature `sig` in `mod` extends something the
-module's package does not own. `sig` includes the callee at position 1, so a
-module always owns methods of its own functions.
+Whether a method with signature `sig` defined in `mod` can apply to arguments whose
+types the module's package does not own. `sig` includes the callee at position 1,
+so a module always owns methods of its own functions.
 """
 function _is_piracy(mod::Module, @nospecialize(sig))
     home = _root_module(mod)
-    for owner in _type_owners!(Module[], sig)
-        if _root_module(owner) === home
+    for p in (unwrap_unionall(sig)::DataType).parameters
+        if _is_owned(home, p)
             return false
         end
     end

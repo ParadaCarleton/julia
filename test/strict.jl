@@ -9,6 +9,7 @@ Base.Experimental.@compiler_options strict=true
 
 struct Widget end
 struct Gadget{T} end
+abstract type Shape end
 
 frob(x) = x
 Base.show(io::IO, ::Widget) = print(io, "widget")
@@ -51,10 +52,39 @@ end
     # A qualified definition evaluates to nothing, so assert against the method table.
     Core.eval(Vendor, :(Base.push!(v::Vector{Widget}, x::Widget) = v))
     Core.eval(Vendor, :(Base.show(io::IO, ::Gadget{T}) where {T} = nothing))
-    Core.eval(Vendor, :(Base.show(io::IO, ::Union{Int,Widget}, ::Bool) = nothing))
+    Core.eval(Vendor, :(Base.show(io::IO, ::Union{Widget,Gadget}, ::Bool) = nothing))
+    Core.eval(Vendor, :(Base.show(io::IO, ::Shape, ::Bool) = nothing))
+    Core.eval(Vendor, :(Base.show(io::IO, ::T, ::Char) where {T<:Widget} = nothing))
+    Core.eval(Vendor, :(Base.show(io::IO, ::Vector{<:Widget}, ::Char) = nothing))
+    Core.eval(Vendor, :(Base.show(io::IO, ::Val{Widget()}) = nothing))
+    Core.eval(Vendor, :(Base.show(io::IO, ::Bool, xs::Vararg{Widget,2}) = nothing))
+    Core.eval(Vendor, :(Base.show(io::IO, ::Widget, xs::Int...) = nothing))
     @test which(push!, Tuple{Vector{Vendor.Widget}, Vendor.Widget}).module === Vendor
     @test which(show, Tuple{IO, Vendor.Gadget{Int}}).module === Vendor
     @test which(show, Tuple{IO, Vendor.Widget, Bool}).module === Vendor
+    @test which(show, Tuple{IO, Vendor.Shape, Bool}).module === Vendor
+    @test which(show, Tuple{IO, Vendor.Widget, Char}).module === Vendor
+    @test which(show, Tuple{IO, Vector{Vendor.Widget}, Char}).module === Vendor
+    @test which(show, Tuple{IO, Val{Vendor.Widget()}}).module === Vendor
+    @test which(show, Tuple{IO, Bool, Vendor.Widget, Vendor.Widget}).module === Vendor
+    @test which(show, Tuple{IO, Vendor.Widget, Int, Int}).module === Vendor
+end
+
+@testset "signatures that also match foreign arguments are piracy" begin
+    owned_shows() = count(m -> m.module === Vendor, methods(show).ms)
+    before = owned_shows()
+    # Each signature matches a call made only of foreign types, noted alongside.
+    @test_throws StrictModeError Core.eval(Vendor, :(Base.show(io::IO, ::Union{Int,Widget}, ::Bool) = nothing))  # (IO, Int, Bool)
+    @test_throws StrictModeError Core.eval(Vendor, :(Base.show(io::IO, ::Real, ::Bool) = nothing))
+    @test_throws StrictModeError Core.eval(Vendor, :(Base.show(io::IO, ::T, ::Bool) where {T<:Union{Int,Widget}} = nothing))
+    @test_throws StrictModeError Core.eval(Vendor, :(Base.show(io::IO, ::Vector{T}) where {T} = nothing))
+    @test_throws StrictModeError Core.eval(Vendor, :(Base.show(io::IO, ::Vector{<:Union{Int,Widget}}) = nothing))
+    @test_throws StrictModeError Core.eval(Vendor, :(Base.show(io::IO, ::Bool, xs::Widget...) = nothing))  # (IO, Bool)
+    @test_throws StrictModeError Core.eval(Vendor, :(Base.show(io::IO, ::Bool, xs::Vararg{Widget,N}) where {N} = nothing))
+    @test_throws StrictModeError Core.eval(Vendor, :(Base.show(io::IO, ::Tuple{Vararg{Widget}}) = nothing))  # (IO, Tuple{})
+    @test owned_shows() == before
+    @test_throws StrictModeError Core.eval(Vendor, :((::Union{typeof(+),typeof(frob)})(a::Int, b::Int) = 0))
+    @test !any(m -> m.module === Vendor, methods(+).ms)
 end
 
 @testset "strict is opt-in and can be switched off" begin
@@ -75,4 +105,13 @@ end
     @test occursin("type piracy", msg)
     @test occursin("Vendor", msg)
     @test occursin("Base", msg)
+    # A signature that names an owned type still lists only the foreign owners.
+    err = try
+        Core.eval(Vendor, :(Base.show(io::IO, ::Union{Int,Widget}, ::Char) = nothing))
+    catch e
+        e
+    end
+    owners = last(split(sprint(showerror, err), "owns none of: "))
+    @test occursin("Core", owners)
+    @test !occursin("Vendor", owners)
 end
