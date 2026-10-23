@@ -1,7 +1,9 @@
 # This file is a part of Julia. License is MIT: https://julialang.org/license
 
-using Test
+using Test, Random
 using Base: StrictModeError
+
+include("strict_oracle.jl")
 
 "Owns a function and a type, so it can legally extend either."
 module Vendor
@@ -114,4 +116,13 @@ end
     owners = last(split(sprint(showerror, err), "owns none of: "))
     @test occursin("Core", owners)
     @test !occursin("Vendor", owners)
+end
+
+@testset "the rule rejects every signature that matches foreign-only arguments" begin
+    pick = StrictOracle.RandomPick(Random.Xoshiro(0x5715))
+    sigs = [StrictOracle.random_signature(pick, 2) for _ in 1:500]
+    piratical = filter(sig -> StrictOracle.foreign_witness(sig) !== nothing, sigs)
+    @test length(piratical) > 100
+    @test isempty(filter(sig -> !Base._is_piracy(StrictOracle, sig), piratical))
+    # measured: the rule also rejects ~25% of signatures with no witness, mostly because UNIVERSE is finite.
 end
