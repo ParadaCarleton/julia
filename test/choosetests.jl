@@ -1,9 +1,11 @@
 # This file is a part of Julia. License is MIT: https://julialang.org/license
 
-using Random, Sockets
+using Random, Sockets, TOML
 
 const STDLIB_DIR = Sys.STDLIB
-const STDLIBS = filter!(x -> isfile(joinpath(STDLIB_DIR, x, "src", "$(x).jl")), readdir(STDLIB_DIR))
+# Vendored packages are tested upstream, in their own environments.
+const VENDORED_STDLIBS = TOML.parsefile(joinpath(@__DIR__, "vendored_stdlibs.toml"))["names"]
+const STDLIBS = [x for x in readdir(STDLIB_DIR) if isfile(joinpath(STDLIB_DIR, x, "src", "$(x).jl")) && !(x in VENDORED_STDLIBS)]
 
 const TESTNAMES = [
         "subarray", "core", "compiler", "compiler_extras", "worlds", "atomics",
