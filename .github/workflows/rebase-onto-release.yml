@@ -2,6 +2,7 @@ name: Rebase onto latest Julia release
 on:
   schedule: [{ cron: "0 6 * * *" }]
   workflow_dispatch:
+  push: { branches: [master] }
 permissions:
   contents: write
   pull-requests: read
@@ -12,24 +13,37 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { ref: master, fetch-depth: 0, token: "${{ secrets.REBASE_TOKEN }}" }
-      - name: Rebase master and its open pull requests onto newest stable tag
-        env: { BRANCH: master, GH_TOKEN: "${{ secrets.REBASE_TOKEN }}" }
+      - name: Rebase master onto newest stable tag, then its open pull requests onto master
+        env:
+          BRANCH: master
+          GH_TOKEN: "${{ secrets.REBASE_TOKEN }}"
+          FORCED: "${{ github.event.forced }}"
+          BEFORE: "${{ github.event.before }}"
+          AFTER: "${{ github.event.after }}"
         run: |
           set -euo pipefail
           git config user.name github-actions && git config user.email github-actions@users.noreply.github.com
-          git fetch --tags https://github.com/JuliaLang/julia.git
-          latest=$(git tag -l 'v*' | grep -xE 'v[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -1)
-          base=$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' --exclude '*-*' HEAD)
-          echo "base=$base latest=$latest"
-          if [ "$base" = "$latest" ]; then exit 0; fi
-          old=$(git rev-parse HEAD)
-          git rebase --onto "$latest" "$base"
-          new=$(git rev-parse HEAD)
-          git push --force-with-lease="$BRANCH:$old" origin "HEAD:$BRANCH"
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            # A forced push to master comes from the release rebase below, which moves the pull requests itself.
+            if [ "$FORCED" = true ]; then exit 0; fi
+            old=$BEFORE
+            new=$AFTER
+          else
+            git fetch --tags https://github.com/JuliaLang/julia.git
+            latest=$(git tag -l 'v*' | grep -xE 'v[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -1)
+            base=$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' --exclude '*-*' HEAD)
+            echo "base=$base latest=$latest"
+            if [ "$base" = "$latest" ]; then exit 0; fi
+            old=$(git rev-parse HEAD)
+            git rebase --onto "$latest" "$base"
+            new=$(git rev-parse HEAD)
+            git push --force-with-lease="$BRANCH:$old" origin "HEAD:$BRANCH"
+          fi
           # Each pull request keeps only its own commits, the ones after the old master tip.
           stale=()
           for head in $(gh pr list --repo "$GITHUB_REPOSITORY" --base "$BRANCH" --state open --json headRefName,isCrossRepository --jq '.[] | select(.isCrossRepository | not) | .headRefName'); do
             tip=$(git rev-parse "origin/$head")
+            if git merge-base --is-ancestor "$new" "$tip"; then continue; fi
             if git merge-base --is-ancestor "$old" "$tip" && git rebase --onto "$new" "$old" "$tip"; then
               git push --force-with-lease="$head:$tip" origin "HEAD:$head"
             else
