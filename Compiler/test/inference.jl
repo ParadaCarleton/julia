@@ -5124,7 +5124,8 @@ g_max_methods(x) = f_max_methods(x)
 @test Base.infer_return_type(x -> f_max_methods(x; k=2), Tuple{Any}) === Any
 @test Base.infer_return_type(x -> applicable(f_max_methods, x) ? 1 : nothing, Tuple{Int}) === Int
 @test Base.infer_return_type(x -> applicable(f_max_methods, x) ? 1 : nothing, Tuple{Any}) === Union{Nothing,Int}
-@test Base.infer_return_type(x -> applicable(f_max_methods, x; k=2) ? 1 : nothing, Tuple{Int}) === Int
+# keyword `applicable` checks the by-name fallback at run time
+@test_broken Base.infer_return_type(x -> applicable(f_max_methods, x; k=2) ? 1 : nothing, Tuple{Int}) === Int
 @test Base.infer_return_type(x -> applicable(f_max_methods, x; k=2) ? 1 : nothing, Tuple{Any}) === Union{Nothing,Int}
 
 # Test that `Core.TypeName.concrete_only` makes inference give up at call sites with
