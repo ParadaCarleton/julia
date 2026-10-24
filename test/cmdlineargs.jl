@@ -625,6 +625,29 @@ let exename = `$(Base.julia_cmd()) --startup-file=no --color=no`
         @test isempty(got)
         rm(covfile)
 
+        # a tracked path given through a symlink matches files loaded through it
+        if !Sys.iswindows()
+            mktempdir() do parent
+                real = realpath(mkdir(joinpath(parent, "Real")))
+                link = joinpath(parent, "Link")
+                symlink(real, link)
+                write(joinpath(real, "linked.jl"), "f(x) = x + 1\nf(1)\n")
+                outfile = joinpath(dir, "linked.info")
+                for (tracked, loaded) in ((link, link), (link, real), (real, real), (real, link))
+                    srcfile = joinpath(loaded, "linked.jl")
+                    run(`$cov_exename --code-coverage=$outfile --code-coverage=@$tracked $srcfile`)
+                    covered = contains(read(outfile, String), "SF:$srcfile")
+                    rm(outfile)
+                    # files are compared unresolved, so a symlink below the tracked realpath is missed
+                    if (tracked, loaded) == (real, link)
+                        @test_broken covered
+                    else
+                        @test covered
+                    end
+                end
+            end
+        end
+
         function coverage_info_for(src::String)
             mktemp(dir) do srcfile, io
                 write(io, src); close(io)
