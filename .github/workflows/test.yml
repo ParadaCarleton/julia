@@ -46,6 +46,9 @@ jobs:
           JULIA_TEST_MAXRSS_MB: 3500
       - if: ${{ !cancelled() && matrix.shard == 1 }}
         run: ./julia -e 'Base.runtests(["threads"]; ncores=Sys.EFFECTIVE_CPU_THREADS)'
+      - name: Strict-mode piracy property test
+        if: ${{ !cancelled() && matrix.shard == 1 }}
+        run: ./julia --project=test/strict_properties -e 'using Pkg; Pkg.instantiate(); include("test/strict_properties/runtests.jl")'
       - if: ${{ failure() }}
         uses: actions/upload-artifact@v4
         with:

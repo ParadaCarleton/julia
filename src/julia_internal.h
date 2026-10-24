@@ -2025,6 +2025,7 @@ JL_DLLEXPORT int jl_isabspath(const char *in) JL_NOTSAFEPOINT;
     XX(splatnew_sym) \
     XX(statement_sym) \
     XX(static_parameter_sym) \
+    XX(strict_sym) \
     XX(thismodule_sym) \
     XX(throw_undef_if_not_sym) \
     XX(thunk_sym) \
