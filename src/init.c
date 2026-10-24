@@ -540,11 +540,25 @@ int jl_isabspath(const char *in) JL_NOTSAFEPOINT
     return 0; // relative path
 }
 
+// the tracked path as given, made absolute: files loaded through its symlinks match it
+const char *jl_tracked_path_unresolved = NULL;
+
+static int path_has_prefix(const char *path, size_t len, const char *prefix) JL_NOTSAFEPOINT
+{
+    size_t prefix_len = prefix ? strlen(prefix) : 0;
+    return prefix && len >= prefix_len && strncmp(path, prefix, prefix_len) == 0;
+}
+
+JL_DLLEXPORT int jl_path_is_tracked(const char *path, size_t len) JL_NOTSAFEPOINT
+{
+    return path_has_prefix(path, len, jl_options.tracked_path) ||
+           path_has_prefix(path, len, jl_tracked_path_unresolved);
+}
+
 JL_DLLEXPORT int jl_is_file_tracked(jl_sym_t *path)
 {
     const char* path_ = jl_symbol_name(path);
-    int tpath_len = strlen(jl_options.tracked_path);
-    return (strlen(path_) >= tpath_len) && (strncmp(path_, jl_options.tracked_path, tpath_len) == 0);
+    return jl_path_is_tracked(path_, strlen(path_));
 }
 
 static void jl_set_io_wait(int v)
