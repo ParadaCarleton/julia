@@ -1184,6 +1184,31 @@ static const char *absformat(const char *in)
     return out;
 }
 
+static char *abspath(const char *in, int nprefix)
+{ // prefix a relative path with the working directory, keeping its symlinks
+  // ignores (copies directly over) nprefix characters at the start of abspath
+    char *out;
+    size_t sz = strlen(in + nprefix) + 1;
+    if (jl_isabspath(in + nprefix)) {
+        out = (char*)malloc_s(sz + nprefix);
+        memcpy(out, in, sz + nprefix);
+    }
+    else {
+        size_t path_size = JL_PATH_MAX;
+        char *path = (char*)malloc_s(JL_PATH_MAX);
+        if (uv_cwd(path, &path_size)) {
+            jl_error("fatal error: unexpected error while retrieving current working directory");
+        }
+        out = (char*)malloc_s(path_size + 1 + sz + nprefix);
+        memcpy(out, in, nprefix);
+        memcpy(out + nprefix, path, path_size);
+        out[nprefix + path_size] = PATHSEPSTRING[0];
+        memcpy(out + nprefix + path_size + 1, in + nprefix, sz);
+        free(path);
+    }
+    return out;
+}
+
 static char *absrealpath(const char *in, int nprefix)
 { // compute an absolute realpath location, so that chdir doesn't change the file reference
   // ignores (copies directly over) nprefix characters at the start of abspath
@@ -1199,24 +1224,7 @@ static char *absrealpath(const char *in, int nprefix)
     }
     else {
         uv_fs_req_cleanup(&req);
-        size_t sz = strlen(in + nprefix) + 1;
-        if (jl_isabspath(in + nprefix)) {
-            out = (char*)malloc_s(sz + nprefix);
-            memcpy(out, in, sz + nprefix);
-        }
-        else {
-            size_t path_size = JL_PATH_MAX;
-            char *path = (char*)malloc_s(JL_PATH_MAX);
-            if (uv_cwd(path, &path_size)) {
-                jl_error("fatal error: unexpected error while retrieving current working directory");
-            }
-            out = (char*)malloc_s(path_size + 1 + sz + nprefix);
-            memcpy(out, in, nprefix);
-            memcpy(out + nprefix, path, path_size);
-            out[nprefix + path_size] = PATHSEPSTRING[0];
-            memcpy(out + nprefix + path_size + 1, in + nprefix, sz);
-            free(path);
-        }
+        out = abspath(in, nprefix);
     }
     return out;
 }
@@ -1292,8 +1300,10 @@ static void jl_resolve_sysimg_location(JL_IMAGE_SEARCH rel, const char* julia_bi
         jl_options.machine_file = absrealpath(jl_options.machine_file, 0);
     if (jl_options.output_code_coverage)
         jl_options.output_code_coverage = absformat(jl_options.output_code_coverage);
-    if (jl_options.tracked_path)
+    if (jl_options.tracked_path) {
+        jl_tracked_path_unresolved = abspath(jl_options.tracked_path, 0);
         jl_options.tracked_path = absrealpath(jl_options.tracked_path, 0);
+    }
 
     const char **cmdp = jl_options.cmds;
     if (cmdp) {
