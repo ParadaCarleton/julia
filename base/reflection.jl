@@ -1096,6 +1096,9 @@ function hasmethod(f, t, kwnames::Tuple{Vararg{Symbol}}; world::UInt=get_world_c
     tt = rewrap_unionall(Tuple{typeof(Core.kwcall), NamedTuple, ft, u.parameters...}, t)
     match = ccall(:jl_gf_invoke_lookup, Any, (Any, Any, UInt), tt, nothing, world)
     match === nothing && return false
+    if (match::Method).sig === KWCALL_BY_NAME_SIG
+        return false # the by-name argument fallback declares no keywords of its own
+    end
     kws = ccall(:jl_uncompress_argnames, Array{Symbol,1}, (Any,), (match::Method).slot_syms)
     kws = kws[((match::Method).nargs + 1):end] # remove positional arguments
     isempty(kws) && return true # some kwfuncs simply forward everything directly

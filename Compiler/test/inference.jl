@@ -5089,7 +5089,8 @@ g_max_methods(x) = f_max_methods(x)
 @test Base.infer_return_type(x -> f_max_methods(x; k=2), Tuple{Any}) === Any
 @test Base.infer_return_type(x -> applicable(f_max_methods, x) ? 1 : nothing, Tuple{Int}) === Int
 @test Base.infer_return_type(x -> applicable(f_max_methods, x) ? 1 : nothing, Tuple{Any}) === Union{Nothing,Int}
-@test Base.infer_return_type(x -> applicable(f_max_methods, x; k=2) ? 1 : nothing, Tuple{Int}) === Int
+# keyword `applicable` checks the by-name fallback at run time
+@test_broken Base.infer_return_type(x -> applicable(f_max_methods, x; k=2) ? 1 : nothing, Tuple{Int}) === Int
 @test Base.infer_return_type(x -> applicable(f_max_methods, x; k=2) ? 1 : nothing, Tuple{Any}) === Union{Nothing,Int}
 
 # Test that `Core.TypeName.concrete_only` makes inference give up at call sites with
@@ -5407,16 +5408,16 @@ function fapplicable end
 gapplicable() = Val(applicable(fapplicable))
 gapplicable(x) = Val(applicable(fapplicable; x))
 @test only(Base.return_types(gapplicable, ())) === Val{false}
-@test only(Base.return_types(gapplicable, (Int,))) === Val{false}
+@test gapplicable(1) === Val(false) # keyword `applicable` resolves at run time
 fapplicable() = 1
 @test only(Base.return_types(gapplicable, ())) === Val{true}
-@test only(Base.return_types(gapplicable, (Int,))) === Val{false}
+@test gapplicable(1) === Val(false) # keyword `applicable` resolves at run time
 Base.delete_method(which(fapplicable, ()))
 @test only(Base.return_types(gapplicable, ())) === Val{false}
-@test only(Base.return_types(gapplicable, (Int,))) === Val{false}
+@test gapplicable(1) === Val(false) # keyword `applicable` resolves at run time
 fapplicable(; x) = x
 @test only(Base.return_types(gapplicable, ())) === Val{true}
-@test only(Base.return_types(gapplicable, (Int,))) === Val{true}
+@test gapplicable(1) === Val(true) # keyword `applicable` resolves at run time
 @test only(Base.return_types(()) do; applicable(); end) === Union{}
 @test only(Base.return_types((Any,)) do x; Val(applicable(x...)); end) == Val
 @test only(Base.return_types((Tuple{Vararg{Int}},)) do x; Val(applicable(+, 1, 2, x...)); end) == Val # could be improved to Val{true}
