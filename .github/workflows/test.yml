@@ -1,6 +1,7 @@
 name: Build and test
 on:
   pull_request:
+  push: { branches: [master] }
   workflow_dispatch:
 concurrency:
   group: test-${{ github.ref }}
@@ -48,12 +49,12 @@ jobs:
           JULIA_TEST_MAXRSS_MB: 3500
       - if: ${{ !cancelled() && matrix.shard == 1 }}
         run: ./julia -e 'Base.runtests(["threads"]; ncores=Sys.EFFECTIVE_CPU_THREADS)'
-      # One zstd archive per run, built even when tests fail; its sysimage is the downloadable build.
-      - if: ${{ !cancelled() && matrix.shard == 1 && steps.build.conclusion == 'success' }}
+      # One zstd archive per master push or manual run, built even when tests fail; its sysimage is the downloadable build.
+      - if: ${{ !cancelled() && matrix.shard == 1 && github.event_name != 'pull_request' && steps.build.conclusion == 'success' }}
         run: |
           make -j$(nproc) binary-dist JULIA_CPU_TARGET="$JULIA_CPU_TARGET"
           tar --use-compress-program='zstd -T0 -10' -cf "julia-$GITHUB_SHA-linux-x86_64.tar.zst" julia-*/
-      - if: ${{ !cancelled() && matrix.shard == 1 && steps.build.conclusion == 'success' }}
+      - if: ${{ !cancelled() && matrix.shard == 1 && github.event_name != 'pull_request' && steps.build.conclusion == 'success' }}
         uses: actions/upload-artifact@v4
         with:
           name: julia-${{ github.sha }}-linux-x86_64
