@@ -664,7 +664,8 @@ end
 
 # a keyword method whose function argument is a Vararg still invalidates callers
 # that were compiled against no matching keyword method
-kwvararg_f(x) = 1
+# (`x` is not a positional name of `kwvararg_f`, so a by-name call cannot resolve)
+kwvararg_f(a) = 1
 kwvararg_caller() = kwvararg_f(; x=1)
 @test_throws MethodError kwvararg_caller()
 Core.kwcall(::NamedTuple{(:x,)}, ::typeof(kwvararg_f)...) = 2
