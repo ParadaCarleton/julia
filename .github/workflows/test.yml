@@ -32,7 +32,8 @@ jobs:
       # threads.jl runs in its own step: its BLAS test needs JULIA_CPU_THREADS to cover every CPU.
       - name: Choose tests
         run: |
-          tests="all -compileall -threads"
+          # Pkg's tests pin versions of OrderedCollections, which is vendored here as a stdlib.
+          tests="all -compileall -threads -Pkg"
           if [ "${{ github.event_name }}" = pull_request ] && git diff --quiet HEAD^1 HEAD -- Compiler src base/compiler test/compiler; then
             tests="$tests -compiler"
           fi
