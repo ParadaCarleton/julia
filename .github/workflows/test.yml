@@ -29,6 +29,7 @@ jobs:
       - if: ${{ matrix.shard == 1 }}
         run: |
           ./julia --startup-file=no contrib/vendor_stdlibs.jl --check
+          ./julia --startup-file=no contrib/test_vendor_stdlibs.jl
           ./julia --startup-file=no -e 'using Revise, PackageCompiler'
       # The runner's resolver fails reverse lookups that Sockets' getnameinfo test expects to succeed.
       - run: echo '255.255.255.0 netmask' | sudo tee -a /etc/hosts

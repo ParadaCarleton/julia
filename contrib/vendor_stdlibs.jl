@@ -67,7 +67,7 @@ function vendor!(
         rm(joinpath(dest, junk); recursive = true, force = true)
     end
     println("$name ← $repo@$tag ($commit)")
-    return Dict("repo" => repo, "ref" => tag, "commit" => commit)
+    return Dict("repo" => repo, "requested" => ref, "ref" => tag, "commit" => commit)
 end
 
 """Make `stdlib/<name>` a symlink to the in-tree package at `path`, relative to stdlib/."""
@@ -216,12 +216,21 @@ function check_names(names::AbstractVector{<:AbstractString})::Nothing
     return nothing
 end
 
-"""Fail unless stdlib/vendored.lock.toml pins exactly the cloned packages of `sources`."""
-function check_lock(sources::AbstractDict)::Nothing
+"""Whether `lock` was written for the repository and requested ref that `source` names."""
+function lock_matches(source::AbstractDict, lock::AbstractDict)::Bool
+    return get(lock, "repo", "") == source["repo"] && get(lock, "requested", "") == source["ref"]
+end
+
+"""Fail unless `locks` pins exactly the cloned packages of `sources`, each for its configured repository and ref."""
+function check_lock(sources::AbstractDict, locks::AbstractDict)::Nothing
     cloned = sort!([name for (name, source) in sources if !haskey(source, "path")])
-    locked = sort!(collect(keys(TOML.parsefile(joinpath(STDLIB, "vendored.lock.toml")))))
+    locked = sort!(collect(keys(locks)))
     if cloned != locked
         error("stdlib/vendored.lock.toml pins $locked, not $cloned; run `julia contrib/vendor_stdlibs.jl`")
+    end
+    stale = [name for name in cloned if !lock_matches(sources[name], locks[name])]
+    if !isempty(stale)
+        error("stdlib/vendored.lock.toml was made for another repository or ref than stdlib/vendored.toml names for $stale; run `julia contrib/vendor_stdlibs.jl`")
     end
     return nothing
 end
@@ -237,7 +246,7 @@ function main(args::AbstractVector{<:AbstractString})::Nothing
     gone = dropped(vendored)
     check_names(union(vendored, gone))
     if verify
-        check_lock(sources)
+        check_lock(sources, TOML.parsefile(joinpath(STDLIB, "vendored.lock.toml")))
     else
         for name in gone
             rm(joinpath(STDLIB, name); recursive = true, force = true)
@@ -268,4 +277,6 @@ function main(args::AbstractVector{<:AbstractString})::Nothing
     return nothing
 end
 
-main(ARGS)
+if abspath(PROGRAM_FILE) == @__FILE__
+    main(ARGS)
+end
