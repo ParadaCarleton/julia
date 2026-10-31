@@ -1230,7 +1230,8 @@ function _is_julia_source(file::AbstractString)
     if any(dir -> startswith(path, dir), julia_dirs)
         return true
     end
-    return any(depot -> startswith(path, joinpath(depot, "packages", "")), DEPOT_PATH)
+    # `JULIA_DEPOT_PATH` may name a depot relative to the working directory
+    return any(depot -> startswith(path, joinpath(abspath(depot), "packages", "")), DEPOT_PATH)
 end
 
 """
