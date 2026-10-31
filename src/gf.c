@@ -298,16 +298,28 @@ JL_DLLEXPORT jl_value_t *jl_specializations_lookup(jl_method_t *m, jl_value_t *t
     return mi;
 }
 
-JL_DLLEXPORT jl_value_t *jl_methtable_lookup(jl_value_t *type, size_t world)
+static jl_value_t *methtable_lookup(jl_methtable_t *mt, jl_value_t *type, size_t world)
 {
     // TODO: this is sort of an odd lookup strategy (and the only user of
     // jl_typemap_assoc_by_type with subtype=0), while normally jl_gf_invoke_lookup would be
     // expected to be used instead
     struct jl_typemap_assoc search = {type, world, NULL};
-    jl_typemap_entry_t *sf = jl_typemap_assoc_by_type(jl_atomic_load_relaxed(&jl_method_table->defs), &search, 0, /*subtype*/0);
+    jl_typemap_entry_t *sf = jl_typemap_assoc_by_type(jl_atomic_load_relaxed(&mt->defs), &search, 0, /*subtype*/0);
     if (!sf)
         return jl_nothing;
     return sf->func.value;
+}
+
+JL_DLLEXPORT jl_value_t *jl_methtable_lookup(jl_value_t *type, size_t world)
+{
+    return methtable_lookup(jl_method_table, type, world);
+}
+
+// The method with the signature of `method` in its own table (an external
+// `@MethodTable` or the global one) in `world`, else nothing.
+JL_DLLEXPORT jl_value_t *jl_method_table_lookup_own(jl_method_t *method, size_t world)
+{
+    return methtable_lookup(jl_method_get_table(method), method->sig, world);
 }
 
 // ----- MethodInstance specialization instantiation ----- //

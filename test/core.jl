@@ -8450,8 +8450,11 @@ using Test
 let m = @overlay mt function sin(x::Float64); 1; end
     @test isa(m, Method)
 end
-# the reactive compiler keeps the code of a method that lives in an external table
+# a method of an external table is live in that table, not in the global one
 let m = @overlay mt function sinh(x::Float64); 6; end
+    world = Base.get_world_counter()
+    @test ccall(:jl_method_table_lookup_own, Any, (Any, Csize_t), m, world) === m
+    @test ccall(:jl_methtable_lookup, Any, (Any, Csize_t), m.sig, world) !== m
     @test !Base.Compiler.reactive_method_dead(Base.Compiler.specialize_method(m, m.sig, Core.svec()))
 end
 # short function def
