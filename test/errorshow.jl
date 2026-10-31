@@ -1736,6 +1736,8 @@ module KeywordSuggestions
     pair(x, y) = (x, y)
     slurpy(x::Marker; kws...) = (x, kws)
     unnamed(::Int, y) = y
+    overloaded(x::Integer; scale = 1) = x * scale
+    overloaded(x::AbstractString; kws...) = (x, kws)
 end
 
 @testset "keyword argument suggestions" begin
@@ -1765,6 +1767,16 @@ end
     @test Base.nameable_keywords(KeywordSuggestions.unnamed) == [:y]
     @test !Base.accepts_any_keyword(KeywordSuggestions.scaled)
     @test Base.accepts_any_keyword(KeywordSuggestions.slurpy)
+
+    # an overload the positional arguments cannot reach neither silences nor supplies names
+    @test occursin("did you mean `scale`?",
+                   sprint(showerror, try KeywordSuggestions.overloaded(1; scal = 2) catch err; err end))
+    @test !Base.accepts_any_keyword(KeywordSuggestions.overloaded, Tuple{Int})
+
+    @test Base.closest_name(:abcd, [:abcd]) === nothing
+    @test Base.closest_name(:abcd, [:abce, :abcd, :abdd]) === :abce
+    # a name far longer than every candidate resembles none of them
+    @test Base.closest_name(Symbol("a"^200), [:a, :aa]) === nothing
 end
 
 module UndefVarSuggestions
