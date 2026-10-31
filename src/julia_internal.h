@@ -2044,7 +2044,7 @@ JL_DLLEXPORT enum jl_memory_order jl_get_atomic_order_checked(jl_sym_t *order, c
 struct _jl_image_fptrs_t;
 
 JL_DLLEXPORT void jl_write_coverage_data(const char*);
-extern const char *jl_tracked_path_unresolved;
+extern JL_DLLEXPORT const char *jl_tracked_path_unresolved;
 JL_DLLEXPORT int jl_path_is_tracked(const char *path, size_t len) JL_NOTSAFEPOINT;
 void jl_write_malloc_log(void);
 
