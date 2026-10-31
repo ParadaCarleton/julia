@@ -5427,10 +5427,11 @@ static int all_usings_unchanged_implicit(jl_module_t *mod)
 // image appends a report to the path: the pages the process wrote, and
 // the instructions that wrote them first.
 #define REACTIVE_DIRTY_WRITERS 128
-static uintptr_t reactive_dirty_writer_ip[REACTIVE_DIRTY_WRITERS];
-static size_t reactive_dirty_writer_n[REACTIVE_DIRTY_WRITERS];
-static size_t reactive_dirty_nwriters = 0;
-static size_t reactive_dirty_faults = 0;
+// The fault handlers of several threads update these at once: a slot of the
+// writer table is claimed by a compare-and-swap from 0, the counts are atomic.
+static _Atomic(uintptr_t) reactive_dirty_writer_ip[REACTIVE_DIRTY_WRITERS];
+static _Atomic(size_t) reactive_dirty_writer_n[REACTIVE_DIRTY_WRITERS];
+static _Atomic(size_t) reactive_dirty_faults = 0;
 
 static void reactive_dirty_protect(char *start, size_t len)
 {
@@ -5465,19 +5466,15 @@ JL_DLLEXPORT int jl_reactive_dirty_fault(void *addr, void *ip) JL_NOTSAFEPOINT
         return 0;
     size_t page = jl_page_size;
     size_t index = (a - reactive_dirty_start) / page;
-    reactive_dirty_bits[index] = 1;
-    reactive_dirty_faults++;
-    size_t i;
-    for (i = 0; i < reactive_dirty_nwriters; i++)
-        if (reactive_dirty_writer_ip[i] == (uintptr_t)ip)
+    jl_atomic_store_relaxed((_Atomic(uint8_t)*)&reactive_dirty_bits[index], 1);
+    jl_atomic_fetch_add_relaxed(&reactive_dirty_faults, 1);
+    for (size_t i = 0; i < REACTIVE_DIRTY_WRITERS; i++) {
+        uintptr_t seen = 0;
+        if (jl_atomic_cmpswap(&reactive_dirty_writer_ip[i], &seen, (uintptr_t)ip) || seen == (uintptr_t)ip) {
+            jl_atomic_fetch_add_relaxed(&reactive_dirty_writer_n[i], 1);
             break;
-    if (i == reactive_dirty_nwriters && i < REACTIVE_DIRTY_WRITERS) {
-        reactive_dirty_writer_ip[i] = (uintptr_t)ip;
-        reactive_dirty_writer_n[i] = 0;
-        reactive_dirty_nwriters++;
+        }
     }
-    if (i < REACTIVE_DIRTY_WRITERS)
-        reactive_dirty_writer_n[i]++;
     mprotect(reactive_dirty_start + index * page, page, PROT_READ | PROT_WRITE);
     return 1;
 }
@@ -5493,18 +5490,22 @@ JL_DLLEXPORT void jl_reactive_dirty_report(const char *tag)
     if (ios_file(&out, reactive_dirty_path, 1, 1, 1, 0) == NULL)
         return;
     ios_seek_end(&out);
+    size_t nwriters = 0;
+    while (nwriters < REACTIVE_DIRTY_WRITERS && jl_atomic_load_relaxed(&reactive_dirty_writer_ip[nwriters]) != 0)
+        nwriters++;
     ios_printf(&out, "%s: %zu of %zu pages dirty (%zu KB of %zu KB), %zu faults, %zu writers\n", tag, dirty,
                reactive_dirty_npages, dirty * jl_page_size / 1024, reactive_dirty_len / 1024,
-               reactive_dirty_faults, reactive_dirty_nwriters);
-    for (size_t i = 0; i < reactive_dirty_nwriters; i++) {
+               jl_atomic_load_relaxed(&reactive_dirty_faults), nwriters);
+    for (size_t i = 0; i < nwriters; i++) {
+        uintptr_t ip = jl_atomic_load_relaxed(&reactive_dirty_writer_ip[i]);
+        size_t n = jl_atomic_load_relaxed(&reactive_dirty_writer_n[i]);
         Dl_info info;
-        if (dladdr((void*)reactive_dirty_writer_ip[i], &info) && info.dli_fname) {
-            ios_printf(&out, "  writer %zu pages: %s+0x%zx %s\n", reactive_dirty_writer_n[i], info.dli_fname,
-                       (size_t)(reactive_dirty_writer_ip[i] - (uintptr_t)info.dli_fbase),
-                       info.dli_sname ? info.dli_sname : "");
+        if (dladdr((void*)ip, &info) && info.dli_fname) {
+            ios_printf(&out, "  writer %zu pages: %s+0x%zx %s\n", n, info.dli_fname,
+                       (size_t)(ip - (uintptr_t)info.dli_fbase), info.dli_sname ? info.dli_sname : "");
         }
         else {
-            ios_printf(&out, "  writer %zu pages: 0x%zx\n", reactive_dirty_writer_n[i], (size_t)reactive_dirty_writer_ip[i]);
+            ios_printf(&out, "  writer %zu pages: 0x%zx\n", n, (size_t)ip);
         }
     }
     ios_close(&out);
