@@ -804,8 +804,7 @@ function _print_hidden_frames(io::IO, trace, hidden, ndigits_max::Int, max_neste
     for (place, m) in enumerate(modules)
         separator = place == 1 ? " @ " : ", "
         printstyled(io, separator; color = :light_black, italic = true)
-        modulecolor = get!(() -> popfirst!(STACKTRACE_MODULECOLORS), STACKTRACE_FIXEDCOLORS,
-                           parentmodule_before_main(m))
+        modulecolor = get_stacktrace_color(parentmodule_before_main(m))
         printstyled(io, m; color = modulecolor, italic = true)
     end
 end
