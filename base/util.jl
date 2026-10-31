@@ -168,6 +168,12 @@ To get the julia command without propagated command line arguments, `julia_cmd()
     The keyword argument `cpu_target` was added in 1.9.
     The flag `--pkgimages` was added in Julia 1.9.
 """
+"""
+The `@path` given to `--code-coverage` or `--track-allocation`, made absolute and normalized.
+`JLOptions().tracked_path` holds its realpath, which misses files loaded through its symlinks.
+"""
+tracked_path_as_given() = unsafe_string(unsafe_load(cglobal(:jl_tracked_path_unresolved, Cstring)))
+
 function julia_cmd(julia=joinpath(Sys.BINDIR, julia_exename()); cpu_target::Union{Nothing,String} = nothing)
     opts = JLOptions()
     if cpu_target === nothing
@@ -222,7 +228,7 @@ function julia_cmd(julia=joinpath(Sys.BINDIR, julia_exename()); cpu_target::Unio
             elseif opts.code_coverage == 2
                 push!(addflags, "--code-coverage=all")
             elseif opts.code_coverage == 3
-                push!(addflags, "--code-coverage=@$(unsafe_string(opts.tracked_path))")
+                push!(addflags, "--code-coverage=@$(tracked_path_as_given())")
             end
             isempty(coverage_file) || push!(addflags, "--code-coverage=$coverage_file")
         end
@@ -232,7 +238,7 @@ function julia_cmd(julia=joinpath(Sys.BINDIR, julia_exename()); cpu_target::Unio
     elseif opts.malloc_log == 2
         push!(addflags, "--track-allocation=all")
     elseif opts.malloc_log == 3
-        push!(addflags, "--track-allocation=@$(unsafe_string(opts.tracked_path))")
+        push!(addflags, "--track-allocation=@$(tracked_path_as_given())")
     end
     if opts.color == 1
         push!(addflags, "--color=yes")
