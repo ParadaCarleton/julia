@@ -1,9 +1,11 @@
 include(joinpath(@__DIR__, "mutation.jl"))
+using Random
 
 seen = Base.IdSet{Method}()
 tally = Dict{Symbol,Int}()
 examples = Dict{Symbol,Vector{Method}}()
 unreadable = 0
+memo = IdDict{Method, Summary}()
 for mod in Base.loaded_modules_array(), n in names(mod; all=true, imported=false)
     if !isdefined(mod, n) || startswith(String(n), "#")
         continue
@@ -18,7 +20,7 @@ for mod in Base.loaded_modules_array(), n in names(mod; all=true, imported=false
         end
         push!(seen, m)
         v = try
-            verdict(m)
+            verdict(m, memo)
         catch
             global unreadable += 1
             continue
@@ -29,8 +31,8 @@ for mod in Base.loaded_modules_array(), n in names(mod; all=true, imported=false
 end
 
 total = sum(values(tally))
-println("methods analyzed: ", total, "   unreadable (no lowered source): ", unreadable)
-for k in (:ok, :writes_arg, :writes_global, :bang_but_clean)
+println("methods analyzed: ", total, "   analysis errors: ", unreadable)
+for k in (:ok, :writes_arg, :writes_global, :unknown, :bang_but_clean)
     c = get(tally, k, 0)
     println("  ", rpad(k, 16), lpad(c, 6), "  ", round(100c / total; digits=1), "%")
 end
