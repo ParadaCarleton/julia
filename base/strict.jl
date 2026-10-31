@@ -65,31 +65,44 @@ function _type_owners!(out::AbstractVector{Module}, @nospecialize(T))
 end
 
 """
-    _is_owned(home, T) -> Bool
+    _is_owned(home, T, exact=false) -> Bool
 
 Whether `T` excludes every value whose type mentions only types declared outside
 `home`. As in Aqua.jl, a type is owned when its name or one of its parameters is.
 A `Union` is owned only when every member is; a `Vararg` only when its length is
 fixed and positive, since `Vararg{T}` also matches zero arguments.
+
+`exact` marks an invariant parameter (anything below a non-`Tuple` type's parameter):
+a matching value's type contains that parameter verbatim, so mentioning one owned type
+suffices there. A `TypeVar` ranges over its bound, so it is never exact.
 """
-function _is_owned(home::Module, @nospecialize(T))
+function _is_owned(home::Module, @nospecialize(T), exact::Bool=false)
     if T isa DataType
         if _root_module(T.name.module) === home
             return true
         end
+        inner = exact || T.name !== Tuple.name
         for p in T.parameters
-            if _is_owned(home, p)
+            if _is_owned(home, p, inner)
                 return true
             end
         end
         return false
     elseif T isa UnionAll
-        return _is_owned(home, T.body)
+        return _is_owned(home, T.body, exact)
     elseif T isa Union
+        # A free typevar can absorb the owned member: `Union{S,Widget}` is `Any` at `S = Any`.
+        if exact && !has_free_typevars(T)
+            return _is_owned(home, T.a, true) || _is_owned(home, T.b, true)
+        end
         return _is_owned(home, T.a) && _is_owned(home, T.b)
     elseif T isa TypeVar
         return _is_owned(home, T.ub)
     elseif T isa Core.TypeofVararg
+        # An unbounded `Vararg` is part of the exact type; a typevar length can still be 0.
+        if exact && !(isdefined(T, :N) && T.N isa TypeVar)
+            return isdefined(T, :T) && _is_owned(home, T.T, true)
+        end
         return isdefined(T, :N) && T.N isa Int && T.N > 0 && _is_owned(home, T.T)
     else
         return _is_owned(home, typeof(T))  # a value used as a type parameter
