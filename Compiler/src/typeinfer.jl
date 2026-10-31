@@ -1967,19 +1967,16 @@ function compile!(codeinfos::Vector{Any}, workqueue::CompilationQueue;
                         if trim
                             push!(reactive_verify_reused, served)
                             push!(reactive_verify_reused, src)
-                            targets = Any[]
-                            for stmt in src.code
-                                isexpr(stmt, :invoke) || isexpr(stmt, :invoke_modify) || continue
-                                target = stmt.args[1]
-                                if target isa CodeInstance || target isa MethodInstance
-                                    reactive_timings() >= 2 && Core.println("reactive: trim invoke ", get_ci_mi(served).specTypes, " -> ",
-                                                                             target isa CodeInstance ? get_ci_mi(target).specTypes : target.specTypes)
-                                    push!(workqueue, target)
-                                    push!(targets, target)
-                                end
-                            end
+                            # the callees of the fresh compile's walk below, with
+                            # the same rule for which of them the memo may hold
+                            n0 = length(workqueue.tocompile)
+                            n1 = invokelatest_queue === nothing ? 0 : length(invokelatest_queue.tocompile)
+                            collectinvokes!(workqueue, src, sptypes_from_meth_instance(mi); invokelatest_queue, external_linkage)
                             reactive_trim_memo_stats[2] += 1
-                            reactive_trim_memo_record!(served, targets, world, interp)
+                            if invokelatest_queue !== workqueue &&
+                               (invokelatest_queue === nothing || length(invokelatest_queue.tocompile) == n1)
+                                reactive_trim_memo_record!(served, workqueue.tocompile[n0 + 1:end], world, interp)
+                            end
                         end
                     end
                     continue
