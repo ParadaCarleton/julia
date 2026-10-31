@@ -658,6 +658,9 @@ let exename = `$(Base.julia_cmd()) --startup-file=no --color=no`
                 @test covers("Real/../Link", joinpath(link, "linked.jl"))
                 @test !covers(link, joinpath(siblings[1], "linked.jl"))
                 @test !covers(real, joinpath(siblings[2], "linked.jl"))
+                # a child started with `julia_cmd` tracks the path as given, symlinks included
+                forwarded = readchomp(`$cov_exename --code-coverage=@$link -e 'print(Base.julia_cmd())'`)
+                @test occursin("--code-coverage=@$link", forwarded)
             end
         end
 
