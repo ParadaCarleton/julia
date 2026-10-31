@@ -870,6 +870,16 @@ JL_DLLEXPORT uint64_t jl_cumulative_recompile_time_ns(void)
 }
 
 /**
+ * @brief Get the cumulative bytes allocated by the GC during compilation.
+ *
+ * @return The cumulative number of bytes allocated during compilation.
+ */
+JL_DLLEXPORT uint64_t jl_cumulative_compile_bytes(void)
+{
+    return jl_atomic_load_relaxed(&jl_cumulative_compile_allocd);
+}
+
+/**
  * @brief Enable per-task timing.
  */
 JL_DLLEXPORT void jl_task_metrics_enable(void)
@@ -1184,6 +1194,74 @@ static const char *absformat(const char *in)
     return out;
 }
 
+static char *abspath(const char *in, int nprefix)
+{ // prefix a relative path with the working directory, keeping its symlinks
+  // ignores (copies directly over) nprefix characters at the start of abspath
+    char *out;
+    size_t sz = strlen(in + nprefix) + 1;
+    if (jl_isabspath(in + nprefix)) {
+        out = (char*)malloc_s(sz + nprefix);
+        memcpy(out, in, sz + nprefix);
+    }
+    else {
+        size_t path_size = JL_PATH_MAX;
+        char *path = (char*)malloc_s(JL_PATH_MAX);
+        if (uv_cwd(path, &path_size)) {
+            jl_error("fatal error: unexpected error while retrieving current working directory");
+        }
+        out = (char*)malloc_s(path_size + 1 + sz + nprefix);
+        memcpy(out, in, nprefix);
+        memcpy(out + nprefix, path, path_size);
+        out[nprefix + path_size] = PATHSEPSTRING[0];
+        memcpy(out + nprefix + path_size + 1, in + nprefix, sz);
+        free(path);
+    }
+    return out;
+}
+
+static char *abspath_normalized(const char *in)
+{ // an absolute path with `.`, `..` and repeated separators dropped, as `Base.abspath` gives it, keeping symlinks
+#ifdef _OS_WINDOWS_
+    // the system resolves drive-relative, UNC and `\\?\` paths
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, *in ? in : ".", -1, NULL, 0);
+    wchar_t *win = (wchar_t*)malloc_s(wlen * sizeof(wchar_t));
+    MultiByteToWideChar(CP_UTF8, 0, *in ? in : ".", -1, win, wlen);
+    wchar_t *wout = _wfullpath(NULL, win, 0);
+    free(win);
+    if (wout == NULL)
+        jl_errorf("fatal error: could not make path \"%s\" absolute", in);
+    int len = WideCharToMultiByte(CP_UTF8, 0, wout, -1, NULL, 0, NULL, NULL);
+    char *out = (char*)malloc_s(len);
+    WideCharToMultiByte(CP_UTF8, 0, wout, -1, out, len, NULL, NULL);
+    free(wout);
+    return out;
+#else
+    char *path = abspath(in, 0);
+    char *src = path, *out = path + 1; // keep the leading `/`
+    while (*src) {
+        while (*src == '/')
+            src++;
+        const char *component = src;
+        while (*src && *src != '/')
+            src++;
+        size_t n = src - component;
+        if (n == 0 || (n == 1 && component[0] == '.'))
+            continue;
+        if (n == 2 && component[0] == '.' && component[1] == '.') {
+            while (out > path + 1 && *--out != '/')
+                ;
+            continue;
+        }
+        if (out > path + 1)
+            *out++ = '/';
+        memmove(out, component, n);
+        out += n;
+    }
+    *out = '\0';
+    return path;
+#endif
+}
+
 static char *absrealpath(const char *in, int nprefix)
 { // compute an absolute realpath location, so that chdir doesn't change the file reference
   // ignores (copies directly over) nprefix characters at the start of abspath
@@ -1199,24 +1277,7 @@ static char *absrealpath(const char *in, int nprefix)
     }
     else {
         uv_fs_req_cleanup(&req);
-        size_t sz = strlen(in + nprefix) + 1;
-        if (jl_isabspath(in + nprefix)) {
-            out = (char*)malloc_s(sz + nprefix);
-            memcpy(out, in, sz + nprefix);
-        }
-        else {
-            size_t path_size = JL_PATH_MAX;
-            char *path = (char*)malloc_s(JL_PATH_MAX);
-            if (uv_cwd(path, &path_size)) {
-                jl_error("fatal error: unexpected error while retrieving current working directory");
-            }
-            out = (char*)malloc_s(path_size + 1 + sz + nprefix);
-            memcpy(out, in, nprefix);
-            memcpy(out + nprefix, path, path_size);
-            out[nprefix + path_size] = PATHSEPSTRING[0];
-            memcpy(out + nprefix + path_size + 1, in + nprefix, sz);
-            free(path);
-        }
+        out = abspath(in, nprefix);
     }
     return out;
 }
@@ -1292,8 +1353,21 @@ static void jl_resolve_sysimg_location(JL_IMAGE_SEARCH rel, const char* julia_bi
         jl_options.machine_file = absrealpath(jl_options.machine_file, 0);
     if (jl_options.output_code_coverage)
         jl_options.output_code_coverage = absformat(jl_options.output_code_coverage);
-    if (jl_options.tracked_path)
+    if (jl_options.tracked_path) {
+        char *unresolved = abspath_normalized(jl_options.tracked_path);
         jl_options.tracked_path = absrealpath(jl_options.tracked_path, 0);
+        // dropping `..` lexically after a symlink names another directory (`Link/..` is not
+        // the parent of Link's target); keep the spelling only if it is the same directory
+        char *unresolved_real = absrealpath(unresolved, 0);
+        uv_fs_t req;
+        int exists = uv_fs_stat(NULL, &req, unresolved, NULL) == 0;
+        uv_fs_req_cleanup(&req);
+        if (!exists || strcmp(unresolved_real, jl_options.tracked_path) == 0)
+            jl_tracked_path_unresolved = unresolved;
+        else
+            free(unresolved);
+        free(unresolved_real);
+    }
 
     const char **cmdp = jl_options.cmds;
     if (cmdp) {

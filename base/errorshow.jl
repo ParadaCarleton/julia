@@ -255,6 +255,82 @@ function show_convert_error(io::IO, ex::MethodError, arg_types_param)
     end
 end
 
+is_keyword_slurp(name::Symbol) = endswith(String(name), "...")
+
+"""
+    nameable_keywords(f, argtypes = Tuple) -> Vector{Symbol}
+
+Every name a call to `f` may supply by keyword: the keyword arguments each method
+that may take `argtypes` declares, together with its positional parameters, which
+a call may also name. A slurped `kwargs...` is not a name and is excluded; see
+`accepts_any_keyword`, as are compiler-generated placeholders such as `#unused#`
+for an unnamed parameter.
+"""
+function nameable_keywords(@nospecialize(f), @nospecialize(argtypes::Type{<:Tuple}) = Tuple)
+    named = [name for m in methods(f, argtypes)
+             for name in vcat(kwarg_decl(m), nameable_parameters(m))
+             if !is_keyword_slurp(name) && !startswith(String(name), "#")]
+    return unique(named)
+end
+
+"""
+    accepts_any_keyword(f, argtypes = Tuple) -> Bool
+
+Whether some method of `f` that may take `argtypes` slurps keyword arguments (`kwargs...`).
+"""
+function accepts_any_keyword(@nospecialize(f), @nospecialize(argtypes::Type{<:Tuple}) = Tuple)
+    return any(is_keyword_slurp, name for m in methods(f, argtypes) for name in kwarg_decl(m))
+end
+
+"""
+    closest_name(given::Symbol, accepted::AbstractVector{Symbol})
+
+The name in `accepted` closest to `given`, or `nothing` when none resembles it
+closely enough to be worth offering. `given` itself is never the answer.
+"""
+function closest_name(given::Symbol, accepted::AbstractVector{Symbol})
+    needle = String(given)
+    best, best_score = nothing, 0.0
+    for name in accepted
+        candidate = String(name)
+        lena, lenb = length(needle), length(candidate)
+        # The distance is at least the length gap, so a wider gap cannot score 0.5.
+        if name === given || 2 * abs(lena - lenb) > max(lena, lenb)
+            continue
+        end
+        score = fuzzyscore(needle, candidate)
+        if score >= 0.5 && (best === nothing || score > best_score)
+            best, best_score = name, score
+        end
+    end
+    return best
+end
+
+"""
+    show_keyword_suggestions(io::IO, f, kwargs, argtypes = Tuple)
+
+Offer a correction for each given keyword name that no method of `f` taking
+positional arguments of `argtypes` accepts but that closely resembles a name one does.
+"""
+function show_keyword_suggestions(io::IO, @nospecialize(f), kwargs, @nospecialize(argtypes::Type{<:Tuple}) = Tuple)
+    # A method slurping keywords accepts every name, so nothing is misspelled.
+    if accepts_any_keyword(f, argtypes)
+        return nothing
+    end
+    accepted = nameable_keywords(f, argtypes)
+    for (given, _) in kwargs
+        if given in accepted
+            continue
+        end
+        suggestion = closest_name(given, accepted)
+        if suggestion !== nothing
+            print(io, "\nSuggestion: unsupported keyword argument `", given,
+                  "`; did you mean `", suggestion, "`?")
+        end
+    end
+    return nothing
+end
+
 function showerror(io::IO, ex::MethodError)
     @nospecialize io
     # ex.args is a tuple type if it was thrown from `invoke` and is
@@ -379,6 +455,10 @@ function showerror(io::IO, ex::MethodError)
     else
         print(io, "\nThe object of type `$(typeof(f))` exists, but no method is defined for this combination of argument types when trying to treat it as a callable object.")
     end
+    if !isempty(kwargs)
+        # Positional arguments may stop short of a method's arity, since the rest can come by name.
+        show_keyword_suggestions(io, f, kwargs, Tuple{san_arg_types_param..., Vararg})
+    end
     if !is_arg_types
         # Check for row vectors used where a column vector is intended.
         vec_args = []
@@ -453,6 +533,18 @@ end
 stacktrace_expand_basepaths()::Bool = Base.get_bool_env("JULIA_STACKTRACE_EXPAND_BASEPATHS", false) === true
 stacktrace_contract_userdir()::Bool = Base.get_bool_env("JULIA_STACKTRACE_CONTRACT_HOMEDIR", true) === true
 stacktrace_linebreaks()::Bool = Base.get_bool_env("JULIA_STACKTRACE_LINEBREAKS", false) === true
+
+"""
+    stacktrace_abbreviated(io::IO)::Bool
+
+Whether to hide the frames of Julia's own code from a trace printed to `io`.
+`JULIA_STACKTRACE_ABBREVIATED` decides for every trace when it is set. Otherwise only a
+caller that can offer the full trace afterwards asks for it, by carrying a
+`:stacktrace_frames_hidden` flag for [`show_backtrace`](@ref) to raise.
+"""
+stacktrace_abbreviated(io::IO)::Bool =
+    Base.get_bool_env(() -> get(io, :stacktrace_frames_hidden, nothing) isa RefValue{Bool},
+                      "JULIA_STACKTRACE_ABBREVIATED") === true
 
 function show_method_candidates(io::IO, ex::MethodError, kwargs=[])
     @nospecialize io
@@ -770,7 +862,45 @@ function _backtrace_print_repetition_closings!(io::IO, i, current_cycles, frame_
     return frame_counter, nactive_cycles
 end
 
-function show_processed_backtrace(io::IO, trace::Vector, num_frames::Int, repeated_cycles::Vector{NTuple{3, Int}}, max_nested_cycles::Int; print_linebreaks::Bool, prefix = nothing)
+"""
+    _print_hidden_frames(io::IO, trace, hidden, ndigits_max::Int, max_nested_cycles::Int, nactive_cycles::Int, ncycle_starts::Int; prefix = nothing)
+
+Print the line standing in for the frames `hidden` names, which lists the modules they came
+from in place of a function and a location. It draws the gutter of the cycle brackets open
+across it, `ncycle_starts` of them opening on it, the way a frame's own line would.
+"""
+function _print_hidden_frames(io::IO, trace, hidden, ndigits_max::Int, max_nested_cycles::Int, nactive_cycles::Int, ncycle_starts::Int; prefix = nothing)
+    named = unique(parentmodule(entry[1]::StackFrame) for entry in view(trace, hidden))
+    modules = [m for m in named if m !== nothing]
+
+    if prefix !== nothing
+        print(io, prefix)
+    end
+    print(io, " ")
+    printstyled(io, "│" ^ (nactive_cycles - ncycle_starts); color = :light_black)
+    printstyled(io, "┌" ^ ncycle_starts; color = :light_black)
+    print(io, lpad("⋮", ndigits_max + 2 + max_nested_cycles - nactive_cycles), " ")
+    printstyled(io, "internal"; color = :light_black, italic = true)
+    for (place, m) in enumerate(modules)
+        separator = place == 1 ? " @ " : ", "
+        printstyled(io, separator; color = :light_black, italic = true)
+        modulecolor = get_stacktrace_color(parentmodule_before_main(m))
+        printstyled(io, m; color = modulecolor, italic = true)
+    end
+end
+
+"""
+    _spend_repeated_numbers(cycle::NTuple{4, T}, n::T)::NTuple{4, T} where {T<:Integer}
+
+`cycle` with the frame numbers that `n - 1` extra repetitions of a single frame inside it
+consume, once per repetition of the cycle, added to its frame-counter advance.
+"""
+function _spend_repeated_numbers(cycle::NTuple{4, T}, n::T)::NTuple{4, T} where {T<:Integer}
+    start, len, repetitions, advance = cycle
+    return (start, len, repetitions, advance + (n - 1) * (repetitions - 1))
+end
+
+function show_processed_backtrace(io::IO, trace::Vector, num_frames::Int, repeated_cycles::Vector{NTuple{3, Int}}, max_nested_cycles::Int; print_linebreaks::Bool, prefix = nothing, kept = nothing)
     println(io)
     prefix === nothing || print(io, prefix)
     println(io, "Stacktrace:")
@@ -782,9 +912,35 @@ function show_processed_backtrace(io::IO, trace::Vector, num_frames::Int, repeat
     frame_counter = 1
     current_cycles = NTuple{4, Int}[] # adding a value to track amount to advance frame_counter when cycle is closed
 
+    #= A frame is preceded by a separator rather than followed by one, so that a run of
+    hidden frames can take a frame's place without leaving a separator behind it. =#
+    printed_any = false
+    function print_separator()
+        if printed_any
+            println(io)
+            print_linebreaks && println(io)
+        end
+        printed_any = true
+    end
+
+    # the pending run of hidden frames, with the brackets open across it and opening on it
+    run_from = run_to = run_depth = run_starts = 0
+    function flush_hidden()
+        if run_from != 0
+            print_separator()
+            _print_hidden_frames(io, trace, run_from:run_to, ndigits_max, max_nested_cycles, run_depth, run_starts; prefix)
+            run_from = 0
+        end
+    end
+
     for i in eachindex(trace)
         (frame, n) = trace[i]
+        hidden = kept !== nothing && !kept[i]
 
+        # a run of hidden frames ends where a cycle opens, so its line sits wholly inside or outside it
+        if repeated_cycles[1][1] == i || (n > 1 && !hidden)
+            flush_hidden()
+        end
         ncycle_starts = 0
         while repeated_cycles[1][1] == i
             cycle = popfirst!(repeated_cycles)
@@ -792,21 +948,41 @@ function show_processed_backtrace(io::IO, trace::Vector, num_frames::Int, repeat
             ncycle_starts += 1
         end
         if n > 1
-            push!(current_cycles, (i, 1, n, n - 1))
-            ncycle_starts += 1
+            if hidden
+                # a hidden frame repeating on its own draws no bracket, but still spends its numbers
+                frame_counter += n - 1
+                # and every enclosing cycle repeats those numbers with each of its repetitions
+                current_cycles .= _spend_repeated_numbers.(current_cycles, n)
+            else
+                push!(current_cycles, (i, 1, n, n - 1))
+                ncycle_starts += 1
+            end
         end
         nactive_cycles = length(current_cycles)
 
-        print_stackframe(io, frame_counter, frame, ndigits_max, max_nested_cycles, nactive_cycles, ncycle_starts, STACKTRACE_FIXEDCOLORS, STACKTRACE_MODULECOLORS; prefix)
+        if hidden
+            if run_from == 0
+                run_from, run_depth, run_starts = i, nactive_cycles, ncycle_starts
+            end
+            run_to = i
+            # the REPL editor shortcut looks a frame up by its position in the full trace
+            if haskey(io, :last_shown_line_infos)
+                push!(io[:last_shown_line_infos], (string(frame.file), frame.line))
+            end
+            # and ends where a cycle closes, so the closing line follows the frames it covers
+            if !isempty(current_cycles) && current_cycles[end][1] + current_cycles[end][2] - 1 == i
+                flush_hidden()
+            end
+        else
+            flush_hidden()
+            print_separator()
+            print_stackframe(io, frame_counter, frame, ndigits_max, max_nested_cycles, nactive_cycles, ncycle_starts, STACKTRACE_FIXEDCOLORS, STACKTRACE_MODULECOLORS; prefix)
+        end
 
         frame_counter, nactive_cycles = _backtrace_print_repetition_closings!(io, i, current_cycles, frame_counter, max_nested_cycles, nactive_cycles, ndigits_max; prefix)
         frame_counter += 1
-
-        if i < length(trace)
-            println(io)
-            print_linebreaks && println(io)
-        end
     end
+    flush_hidden()
 end
 
 # Print a stack frame where the module color is determined by looking up the parent module in
@@ -955,7 +1131,20 @@ function show_backtrace(io::IO, t::Vector; prefix = nothing)
     # Allow external code to edit information in the frames (e.g. line numbers with Revise)
     try invokelatest(update_stackframes_callback[], filtered) catch end
 
-    show_processed_backtrace(IOContext(io, :backtrace => true), filtered, nframes, repeated_cycles, max_nested_cycles; print_linebreaks = stacktrace_linebreaks(), prefix)
+    kept = nothing
+    if stacktrace_abbreviated(io)
+        candidate = _backtrace_user_frames(filtered)
+        # hiding every frame says nothing, and hiding none is the trace as it stands
+        if any(candidate) && !all(candidate)
+            kept = candidate
+            hidden_flag = get(io, :stacktrace_frames_hidden, nothing)
+            if hidden_flag isa RefValue{Bool}
+                hidden_flag[] = true
+            end
+        end
+    end
+
+    show_processed_backtrace(IOContext(io, :backtrace => true), filtered, nframes, repeated_cycles, max_nested_cycles; print_linebreaks = stacktrace_linebreaks(), prefix, kept)
     nothing
 end
 
@@ -1099,6 +1288,61 @@ function _backtrace_collapse_repeated_locations!(trace)
         last_frame = frame
     end
     keepat!(trace, kept_frames)
+end
+
+"""
+    _is_julia_source(file::AbstractString)::Bool
+
+Whether a stack frame's file belongs to Julia itself rather than to the code its user is
+working on. Base, Core, the Compiler and the stdlibs do, as do packages installed into a
+depot. Code entered at the prompt, a script, and a package checked out for development do
+not.
+"""
+function _is_julia_source(file::AbstractString)
+    path = fixup_stdlib_path(String(file))
+    sharedir = abspath(Sys.BINDIR, DATAROOTDIR, "julia")
+    if !isabspath(path)
+        # Base and Core name a file relative to `base/`; `include_string` may name any other
+        return isfile(joinpath(sharedir, "base", path))
+    end
+    # the trailing separator keeps `packages2` and `base-extras` from matching
+    julia_dirs = (joinpath(sharedir, "base", ""), joinpath(sharedir, "stdlib", ""), joinpath(sharedir, "Compiler", ""))
+    if any(dir -> startswith(path, dir), julia_dirs)
+        return true
+    end
+    # `JULIA_DEPOT_PATH` may name a depot relative to the working directory
+    return any(depot -> startswith(path, joinpath(abspath(depot), "packages", "")), DEPOT_PATH)
+end
+
+"""
+    _is_julia_source(frame::StackFrame)::Bool
+
+Whether `frame` belongs to Julia itself. A relative file names Base or Core only when the
+frame's module, if known, is theirs: `include_string` may give user code a Base file name.
+"""
+function _is_julia_source(frame::StackFrame)
+    m = parentmodule(frame)
+    file = string(frame.file)
+    if m !== nothing && !isabspath(fixup_stdlib_path(file)) && !(moduleroot(m) in (Base, Core))
+        return false
+    end
+    return _is_julia_source(file)
+end
+
+"""
+    _backtrace_user_frames(trace::AbstractVector)
+
+Which frames of `trace` to keep when Julia's own are hidden, as a vector of flags: every
+frame from code its user is working on, plus the frame each contiguous run of them called
+into, which names what rejected the call.
+"""
+function _backtrace_user_frames(trace::AbstractVector)
+    kept = [!_is_julia_source(entry[1]::StackFrame) for entry in trace]
+    # a trace runs innermost-first, so the frame a run of user code called sits below it
+    entered = falses(length(kept))
+    entered[begin:(end - 1)] .= @view kept[(begin + 1):end]
+    kept .|= entered
+    return kept
 end
 
 function process_backtrace(t::Vector{StackFrame})
@@ -1276,6 +1520,7 @@ function UndefVarError_hint(io::IO, ex::UndefVarError)
                     printed_too_new = true
                 else
                     print(io, "\nSuggestion: check for spelling errors or missing imports.")
+                    show_name_suggestion(io, var, scope)
                 end
             elseif kind === PARTITION_KIND_GLOBAL || kind === PARTITION_KIND_UNDEF_CONST || kind == PARTITION_KIND_DECLARED
                 print(io, "\nSuggestion: add an appropriate import or assignment. This global was declared but not assigned.")
@@ -1314,6 +1559,33 @@ function UndefVarError_hint(io::IO, ex::UndefVarError)
         end
 
         warned || _UndefVarError_warnfor(io, [Core, Main], var)
+    end
+    return nothing
+end
+
+"""
+    visible_names(scope::Module) -> Vector{Symbol}
+
+Every name code in `scope` can write unqualified: the module's own bindings,
+what each module it `using`s exports (`Base` included unless the module is a
+`baremodule`), and what `Core` exports. Compiler-generated names are left out,
+since no one can have meant to type one.
+"""
+function visible_names(scope::Module)
+    reachable = names(scope; all = true, imported = true, usings = true)
+    return unique(name for name in reachable if !startswith(String(name), "#"))
+end
+
+"""
+    show_name_suggestion(io::IO, var::Symbol, scope::Module)
+
+Offer the name reachable from `scope` that `var` most closely resembles, when one
+resembles it closely enough to be worth offering.
+"""
+function show_name_suggestion(io::IO, var::Symbol, scope::Module)
+    suggestion = closest_name(var, visible_names(scope))
+    if suggestion !== nothing
+        print(io, " Did you mean `", suggestion, "`?")
     end
     return nothing
 end

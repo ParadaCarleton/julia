@@ -5287,6 +5287,7 @@ JL_DLLEXPORT uint64_t jl_typeinf_timing_begin(void)
     if (ct->reentrant_timing & 1)
         return 0;
     ct->reentrant_timing |= 1;
+    jl_compile_allocd_open(ct);
     return jl_hrtime();
 }
 
@@ -5295,6 +5296,7 @@ JL_DLLEXPORT void jl_typeinf_timing_end(uint64_t start, int is_recompile)
     if (!start)
         return;
     jl_task_t *ct = jl_current_task;
+    jl_compile_allocd_close(ct);
     ct->reentrant_timing &= ~1u;
     if (jl_atomic_load_relaxed(&jl_measure_compile_time_enabled)) {
         uint64_t inftime = jl_hrtime() - start;
