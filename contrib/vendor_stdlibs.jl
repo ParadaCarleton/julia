@@ -195,6 +195,27 @@ function register!(
     return nothing
 end
 
+"""Julia's own stdlibs: the names stdlib/stdlib.mk assigns before it adds the vendored ones."""
+function upstream_stdlibs()::Vector{String}
+    makefile = read(joinpath(STDLIB, "stdlib.mk"), String)
+    lists = eachmatch(r"^(?:STDLIBS_WITHIN_SYSIMG|INDEPENDENT_STDLIBS) :=((?:.*\\\n)*.*)$"m, makefile)
+    names = [String(name) for list in lists for name in split(list[1]) if name != "\\"]
+    if isempty(names)
+        error("found no stdlib names in stdlib/stdlib.mk")
+    end
+    return names
+end
+
+"""Fail if a vendored or dropped package shares a name with one of Julia's own stdlibs,
+whose stdlib Project.toml and Manifest.toml entries vendoring would replace or prune."""
+function check_names(names::AbstractVector{<:AbstractString})::Nothing
+    clashes = intersect(names, upstream_stdlibs())
+    if !isempty(clashes)
+        error("$clashes are Julia stdlibs; remove them from stdlib/vendored.toml and test/vendored_stdlibs.toml")
+    end
+    return nothing
+end
+
 """Fail unless stdlib/vendored.lock.toml pins exactly the cloned packages of `sources`."""
 function check_lock(sources::AbstractDict)::Nothing
     cloned = sort!([name for (name, source) in sources if !haskey(source, "path")])
@@ -214,6 +235,7 @@ function main(args::AbstractVector{<:AbstractString})::Nothing
     sources = TOML.parsefile(joinpath(STDLIB, "vendored.toml"))
     vendored = sort!(collect(keys(sources)))
     gone = dropped(vendored)
+    check_names(union(vendored, gone))
     if verify
         check_lock(sources)
     else
