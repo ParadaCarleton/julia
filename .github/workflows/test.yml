@@ -49,6 +49,9 @@ jobs:
           JULIA_TEST_MAXRSS_MB: 3500
       - if: ${{ !cancelled() && matrix.shard == 1 }}
         run: ./julia -e 'Base.runtests(["threads"]; ncores=Sys.EFFECTIVE_CPU_THREADS)'
+      - name: Strict-mode piracy property test
+        if: ${{ !cancelled() && matrix.shard == 1 }}
+        run: ./julia --project=test/strict_properties -e 'using Pkg; Pkg.instantiate(); include("test/strict_properties/runtests.jl")'
       # One zstd archive per master push or manual run, built even when tests fail; its sysimage is the downloadable build.
       - if: ${{ !cancelled() && matrix.shard == 1 && github.event_name != 'pull_request' && steps.build.conclusion == 'success' }}
         run: |

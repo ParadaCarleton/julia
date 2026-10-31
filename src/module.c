@@ -521,6 +521,7 @@ static jl_module_t *jl_new_module__(jl_sym_t *name, jl_module_t *parent)
     m->compile = -1;
     m->infer = -1;
     m->max_methods = -1;
+    jl_atomic_store_relaxed(&m->strict, -1);
     m->file = jl_empty_sym;
     m->line = 0;
     m->hash = parent == NULL ? bitmix(name->hash, jl_module_type->hash) :
@@ -737,6 +738,40 @@ JL_DLLEXPORT int jl_get_module_max_methods(jl_module_t *m)
         m = m->parent;
         value = m->max_methods;
     }
+    return value;
+}
+
+// An environment override supplies the default for a module option, so a whole package tree
+// can be measured under it without editing a line of anyone's source. A module that sets the
+// option itself keeps its own answer, which is what lets one opt back out of the override.
+static int forced_on(const char *name, _Atomic(int8_t) *cache)
+{
+    int8_t forced = jl_atomic_load_relaxed(cache);
+    if (forced == -1) {
+        char *env = getenv(name);
+        forced = env != NULL && env[0] == '1';
+        jl_atomic_store_relaxed(cache, forced);
+    }
+    return forced;
+}
+
+JL_DLLEXPORT void jl_set_module_strict(jl_module_t *self, int value)
+{
+    jl_atomic_store_release(&self->strict, value);
+}
+
+JL_DLLEXPORT int jl_get_module_strict(jl_module_t *m)
+{
+    static _Atomic(int8_t) forced = -1;
+    int value = jl_atomic_load_acquire(&m->strict);
+    while (value == -1 && m->parent != m && m != jl_base_module) {
+        m = m->parent;
+        value = jl_atomic_load_acquire(&m->strict);
+    }
+    // Core, Base and the system image are built before strict.jl exists, so the override skips them.
+    int builtin = m == jl_core_module || m == jl_base_module || (jl_generating_output() && !jl_options.incremental);
+    if (value == -1 && !builtin && forced_on("JULIA_STRICT", &forced))
+        return 1;
     return value;
 }
 
