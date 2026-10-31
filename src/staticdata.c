@@ -3375,6 +3375,9 @@ static void jl_save_system_image_to_stream(ios_t *f, jl_array_t *mod_array,
             JL_CONST_GLOBAL_VARS(XX)
 #undef XX
             jl_queue_for_serialization(&s, s.ptls->root_task->tls);
+            // The root holds every symbol through its children; it may have no other reference.
+            if (!primordials_by_tag(&s))
+                jl_queue_for_serialization(&s, (jl_value_t*)jl_get_root_symbol());
         }
         else {
             // Queue the worklist itself as the first item we serialize
