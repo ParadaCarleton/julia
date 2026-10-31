@@ -699,8 +699,10 @@ void *jl_create_native_impl(LLVMOrcThreadSafeModuleRef llvmmod, int trim, int ex
         jl_error("inference not available for generating compiled output");
     }
     bool timed = (ct->reentrant_timing & 1) == 0;
-    if (timed)
+    if (timed) {
         ct->reentrant_timing |= 1;
+        jl_compile_allocd_open(ct);
+    }
     uint64_t compiler_start_time = 0;
     uint8_t measure_compile_time_enabled = jl_atomic_load_relaxed(&jl_measure_compile_time_enabled);
     if (measure_compile_time_enabled)
@@ -772,6 +774,7 @@ void *jl_create_native_impl(LLVMOrcThreadSafeModuleRef llvmmod, int trim, int ex
             auto end = jl_hrtime();
             jl_atomic_fetch_add_relaxed(&jl_cumulative_compile_time, end - compiler_start_time);
         }
+        jl_compile_allocd_close(ct);
         ct->reentrant_timing &= ~1ull;
     }
     return data;
@@ -2521,8 +2524,15 @@ void jl_get_llvmf_defn_impl(jl_llvmf_dump_t *dump, jl_method_instance_t *mi, jl_
         orc::ThreadSafeModule m = jl_create_ts_module(name_from_method_instance(mi), ctx, DL, TT);
         Function *F = nullptr;
         {
+            // own the compile window, so the inference below is not timed a second time
+            auto ct = jl_current_task;
+            bool timed = (ct->reentrant_timing & 1) == 0;
+            if (timed) {
+                ct->reentrant_timing |= 1;
+                jl_compile_allocd_open(ct);
+            }
             uint64_t compiler_start_time = 0;
-            uint8_t measure_compile_time_enabled = jl_atomic_load_relaxed(&jl_measure_compile_time_enabled);
+            uint8_t measure_compile_time_enabled = timed && jl_atomic_load_relaxed(&jl_measure_compile_time_enabled);
             if (measure_compile_time_enabled)
                 compiler_start_time = jl_hrtime();
             jl_codegen_params_t output(ctx, DL, TT);
@@ -2604,6 +2614,10 @@ void jl_get_llvmf_defn_impl(jl_llvmf_dump_t *dump, jl_method_instance_t *mi, jl_
             if (measure_compile_time_enabled) {
                 auto end = jl_hrtime();
                 jl_atomic_fetch_add_relaxed(&jl_cumulative_compile_time, end - compiler_start_time);
+            }
+            if (timed) {
+                jl_compile_allocd_close(ct);
+                ct->reentrant_timing &= ~1ull;
             }
         }
         if (F) {
