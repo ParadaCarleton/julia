@@ -1220,13 +1220,12 @@ not.
 """
 function _is_julia_source(file::AbstractString)
     path = fixup_stdlib_path(String(file))
+    sharedir = abspath(Sys.BINDIR, DATAROOTDIR, "julia")
     if !isabspath(path)
-        #= Base and Core name a file relative to Julia's own source tree. The REPL's
-        pseudo-files (`REPL[1]`) and code passed to `-e` (`none`) have no extension. =#
-        return endswith(path, ".jl")
+        # Base and Core name a file relative to `base/`; `include_string` may name any other
+        return isfile(joinpath(sharedir, "base", path))
     end
     # the trailing separator keeps `packages2` and `base-extras` from matching
-    sharedir = abspath(Sys.BINDIR, DATAROOTDIR, "julia")
     julia_dirs = (joinpath(sharedir, "base", ""), joinpath(sharedir, "stdlib", ""), joinpath(sharedir, "Compiler", ""))
     if any(dir -> startswith(path, dir), julia_dirs)
         return true
