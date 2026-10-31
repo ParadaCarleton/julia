@@ -604,6 +604,19 @@ let script = """
     @test parse(Int, read(`$(Base.julia_cmd()) --startup-file=no -e $script`, String)) < 10^7
 end
 
+# emitting LLVM IR for reflection counts as compilation
+using InteractiveUtils: code_llvm
+let f = gensym("f"), g = gensym("g")
+    @eval begin
+        $f(x) = x + 1
+        $g(x) = x + 2
+        code_llvm(devnull, $f, (Int,))
+        local t = @timed code_llvm(devnull, $g, (Int,))
+        @test t.compile_time > 0
+        @test 0 < t.compile_bytes <= t.bytes
+    end
+end
+
 let f = gensym("f"), callf = gensym("callf"), call2f = gensym("call2f")
     @eval begin
         $f(::Real) = 1
