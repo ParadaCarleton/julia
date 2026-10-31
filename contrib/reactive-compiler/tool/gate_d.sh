@@ -19,6 +19,8 @@
 #   start    - the start of the bundle after the edits against the founding's
 #   compact  - a founding after the edits (JULIA_REACTIVE_FOUNDING=1): its
 #              image against the first founding's, and its run
+#   mismatch - the overlays of image N over the founding after the edits:
+#              the load refuses them by the checksum of their base
 #   stop     - the server quits, the file is restored
 # Pass step names to run some steps, or nothing to run all of them in order.
 set -u
@@ -245,12 +247,28 @@ compact() {
     echo "=== hops(compact): $mean"
 }
 
+# The overlays of image N over the founding after the edits: another base,
+# refused at the load by its checksum.
+mismatch() {
+    local dir=$OUT/image-mismatch src=$OUT/image-$N name
+    [ -f "$src/sys.so.chain" ] || { echo "=== image $N has no chain: no overlays to refuse"; return 0; }
+    rm -rf "$dir"; mkdir -p "$dir"
+    ln "$APP/lib/julia/sys.so" "$dir/sys.so"
+    cp "$src/sys.so.chain" "$dir/sys.so.chain"
+    while read -r name; do [ -n "$name" ] && ln "$src/$name" "$dir/$name"; done < "$src/sys.so.chain"
+    if "$JH/usr/bin/julia" --startup-file=no -J "$dir/sys.so" -e 'exit(0)' > "$OUT/mismatch.log" 2>&1; then
+        echo "=== the overlays of image $N load over another base"; return 1
+    fi
+    grep -q "extends a base image of checksum" "$OUT/mismatch.log" || { echo "=== the load fails for another reason:"; tail -3 "$OUT/mismatch.log"; return 1; }
+    echo "=== the overlays of image $N are refused over another base"
+}
+
 stop() {
     echo "=== quit: $(python3 "$TOOL/server_request.py" "$APP" quit)"
     restore
 }
 
-steps=${*:-full edits restart oracle memory start compact stop}
+steps=${*:-full edits restart oracle memory start compact mismatch stop}
 for step in $steps; do
     case $step in
         full) full ;;
@@ -259,6 +277,7 @@ for step in $steps; do
         oracle) oracles ;;
         memory) memory ;;
         compact) compact ;;
+        mismatch) mismatch ;;
         start) start ;;
         stop) stop ;;
         *) echo "unknown step $step"; exit 2 ;;
