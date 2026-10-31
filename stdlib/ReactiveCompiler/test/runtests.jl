@@ -47,3 +47,15 @@ end
     @test startswith(ReactiveCompiler.rc_dispatch("frobnicate", saves), "error unknown request")
     @test saves[] == 0
 end
+
+@testset "a chain that cannot be applied stops the start" begin
+    # The base alone would drop the edits the overlays of the chain hold.
+    stock = unsafe_string(Base.JLOptions().image_file)
+    image = joinpath(mktempdir(), basename(stock))
+    cp(stock, image)
+    write(image * ".chain", "missing-overlay.$(Base.Libc.Libdl.dlext)\n")
+    err = IOBuffer()
+    cmd = `$(first(Base.julia_cmd().exec)) --startup-file=no --sysimage=$image -e 'exit(0)'`
+    @test !success(pipeline(cmd; stdout=devnull, stderr=err))
+    @test occursin(r"missing-overlay|\.chain", String(take!(err)))
+end
