@@ -235,6 +235,26 @@ function check_lock(sources::AbstractDict, locks::AbstractDict)::Nothing
     return nothing
 end
 
+"""Fail unless each path source has a `<stdlib_dir>/<name>` symlink to its configured, existing path."""
+function check_links(sources::AbstractDict, stdlib_dir::AbstractString)::Nothing
+    for (name, source) in sources
+        if !haskey(source, "path")
+            continue
+        end
+        link, path = joinpath(stdlib_dir, name), source["path"]
+        if !islink(link)
+            error("stdlib/$name is not a symlink; run `julia contrib/vendor_stdlibs.jl`")
+        end
+        if readlink(link) != path
+            error("stdlib/$name links to $(readlink(link)), not $path from stdlib/vendored.toml; run `julia contrib/vendor_stdlibs.jl`")
+        end
+        if !ispath(joinpath(stdlib_dir, path))
+            error("stdlib/$name links to $path, which does not exist")
+        end
+    end
+    return nothing
+end
+
 """Vendor and register every package; with `--check`, only verify the generated files offline."""
 function main(args::AbstractVector{<:AbstractString})::Nothing
     verify = args == ["--check"]
@@ -247,6 +267,7 @@ function main(args::AbstractVector{<:AbstractString})::Nothing
     check_names(union(vendored, gone))
     if verify
         check_lock(sources, TOML.parsefile(joinpath(STDLIB, "vendored.lock.toml")))
+        check_links(sources, STDLIB)
     else
         for name in gone
             rm(joinpath(STDLIB, name); recursive = true, force = true)

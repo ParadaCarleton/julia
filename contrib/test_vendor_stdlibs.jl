@@ -44,3 +44,26 @@ const LOCKS = Table(
         @test_throws "pins [\"Branch\", \"Gone\", \"Tagged\"]" check_lock(SOURCES, merge(LOCKS, Table("Gone" => LOCKS["Branch"])))
     end
 end
+
+@testset "check_links" begin
+    sources = Table("Local" => Dict("path" => "../Local"), "Branch" => SOURCES["Branch"])
+    """A temp `stdlib/` dir whose `Local` symlink points at `target`, beside an existing `Local/`."""
+    function layout(target::AbstractString; made::Bool = true)::String
+        root = mktempdir()
+        stdlib_dir = mkpath(joinpath(root, "stdlib"))
+        mkpath(joinpath(root, "Local"))
+        if made
+            symlink(target, joinpath(stdlib_dir, "Local"))
+        end
+        return stdlib_dir
+    end
+
+    @test check_links(sources, layout("../Local")) === nothing
+    @test_throws "links to ../Other, not ../Local" check_links(sources, layout("../Other"))
+    @test_throws "not a symlink" check_links(sources, layout("../Local"; made = false))
+
+    @testset "a configured path that does not exist" begin
+        gone = Table("Local" => Dict("path" => "../DoesNotExist"))
+        @test_throws "does not exist" check_links(gone, layout("../DoesNotExist"))
+    end
+end
