@@ -1344,8 +1344,19 @@ static void jl_resolve_sysimg_location(JL_IMAGE_SEARCH rel, const char* julia_bi
     if (jl_options.output_code_coverage)
         jl_options.output_code_coverage = absformat(jl_options.output_code_coverage);
     if (jl_options.tracked_path) {
-        jl_tracked_path_unresolved = abspath_normalized(jl_options.tracked_path);
+        char *unresolved = abspath_normalized(jl_options.tracked_path);
         jl_options.tracked_path = absrealpath(jl_options.tracked_path, 0);
+        // dropping `..` lexically after a symlink names another directory (`Link/..` is not
+        // the parent of Link's target); keep the spelling only if it is the same directory
+        char *unresolved_real = absrealpath(unresolved, 0);
+        uv_fs_t req;
+        int exists = uv_fs_stat(NULL, &req, unresolved, NULL) == 0;
+        uv_fs_req_cleanup(&req);
+        if (!exists || strcmp(unresolved_real, jl_options.tracked_path) == 0)
+            jl_tracked_path_unresolved = unresolved;
+        else
+            free(unresolved);
+        free(unresolved_real);
     }
 
     const char **cmdp = jl_options.cmds;
