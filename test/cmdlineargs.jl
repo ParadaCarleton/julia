@@ -646,7 +646,8 @@ let exename = `$(Base.julia_cmd()) --startup-file=no --color=no`
                 end
                 for (tracked, loaded) in ((link, link), (link, real), (real, real), (real, link))
                     covered = covers(tracked, joinpath(loaded, "linked.jl"))
-                    # files are compared unresolved, so a symlink below the tracked realpath is missed
+                    # files are compared unresolved, so a symlink below the tracked realpath is missed;
+                    # resolving every untracked file would cost a filesystem call per compiled method
                     if (tracked, loaded) == (real, link)
                         @test_broken covered
                     else
@@ -658,6 +659,12 @@ let exename = `$(Base.julia_cmd()) --startup-file=no --color=no`
                 @test covers("Real/../Link", joinpath(link, "linked.jl"))
                 @test !covers(link, joinpath(siblings[1], "linked.jl"))
                 @test !covers(real, joinpath(siblings[2], "linked.jl"))
+                # `Deep/..` is the parent of Deep's target, not the directory holding Deep
+                inner = mkpath(joinpath(parent, "outer", "inner"))
+                symlink(inner, joinpath(parent, "Deep"))
+                write(joinpath(parent, "outer", "up.jl"), "f(x) = x + 1\nf(1)\n")
+                @test covers("Deep/..", joinpath(parent, "outer", "up.jl"))
+                @test !covers("Deep/..", joinpath(real, "linked.jl"))
                 # a child started with `julia_cmd` tracks the path as given, symlinks included
                 forwarded = readchomp(`$cov_exename --code-coverage=@$link -e 'print(Base.julia_cmd())'`)
                 @test occursin("--code-coverage=@$link", forwarded)
