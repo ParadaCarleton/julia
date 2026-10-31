@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Move the CI branch onto the newest Julia release, each branch of .github/features.txt onto
-# its base, and open pull requests onto the branch they were built on; then rebuild master as
+# its base, and open pull requests onto the branch they were built on; then rebuild main as
 # the CI branch plus one merge per listed branch. PUSH=0 builds without pushing.
 set -euo pipefail
 ci=1.13/fork/ci
@@ -12,14 +12,14 @@ push() { # branch, expected remote tip, new tip
 git fetch -q origin '+refs/heads/*:refs/remotes/origin/*'
 git fetch -q --tags https://github.com/JuliaLang/julia.git
 
-# master records what it was built from: its first non-merge ancestor is the CI tip it used,
+# main records what it was built from: its first non-merge ancestor is the CI tip it used,
 # and the second parent of each "assemble: merge X" is the tip of X it used.
 declare -A prev tip base
-master=$(git rev-parse origin/master)
-prev[$ci]=$(git rev-list --first-parent --no-merges -1 "$master")
+main=$(git rev-parse origin/main)
+prev[$ci]=$(git rev-list --first-parent --no-merges -1 "$main")
 while read -r _ _ side _ _ name; do
     if [ -z "${prev[$name]:-}" ]; then prev[$name]=$side; fi
-done < <(git log --first-parent --merges --format='%H %P %s' "$master" | grep ' assemble: merge ' || true)
+done < <(git log --first-parent --merges --format='%H %P %s' "$main" | grep ' assemble: merge ' || true)
 
 order=()
 while read -r branch parent _; do
@@ -74,17 +74,17 @@ for branch in "${order[@]}"; do
 done
 # A rebuilt merge has a new hash, so compare the tree and what each merge took in.
 sources() { git rev-parse "$1^{tree}"; git rev-list --first-parent --no-merges -1 "$1"; git log --first-parent --merges --format=%P "$1" | cut -d' ' -f2; }
-if [ "$(sources HEAD)" != "$(sources "$master")" ]; then
-    push master "$master" HEAD
+if [ "$(sources HEAD)" != "$(sources "$main")" ]; then
+    push main "$main" HEAD
 fi
 
-# Open pull requests into master: move each onto the nearest listed branch, or the CI branch, it was built on.
+# Open pull requests into main: move each onto the nearest listed branch, or the CI branch, it was built on.
 if [ -n "${GITHUB_REPOSITORY:-}" ]; then
     stale=()
     candidates=()
     for (( i=${#order[@]}-1; i>=0; i-- )); do candidates+=("${order[i]}"); done
     candidates+=("$ci")
-    for head in $(gh pr list --repo "$GITHUB_REPOSITORY" --base master --state open --json headRefName,isCrossRepository --jq '.[] | select(.isCrossRepository | not) | .headRefName'); do
+    for head in $(gh pr list --repo "$GITHUB_REPOSITORY" --base main --state open --json headRefName,isCrossRepository --jq '.[] | select(.isCrossRepository | not) | .headRefName'); do
         if [ -n "${base[$head]:-}" ]; then continue; fi
         old=$(git rev-parse "origin/$head")
         moved=0

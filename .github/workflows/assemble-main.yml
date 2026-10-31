@@ -1,19 +1,19 @@
-name: Assemble master from feature branches
+name: Assemble main from feature branches
 on:
   schedule: [{ cron: "0 6 * * *" }]
   workflow_dispatch:
-  push: { branches-ignore: [master] }
+  push: { branches-ignore: [main] }
 permissions:
   contents: write
   pull-requests: read
-concurrency: assemble-master
+concurrency: assemble-main
 jobs:
   assemble:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with: { ref: 1.13/fork/ci, fetch-depth: 0, token: "${{ secrets.REBASE_TOKEN }}" }
-      - name: Rebase the CI branch, the listed branches and open pull requests; rebuild master
+      - name: Rebase the CI branch, the listed branches and open pull requests; rebuild main
         env:
           GH_TOKEN: "${{ secrets.REBASE_TOKEN }}"
         run: |
