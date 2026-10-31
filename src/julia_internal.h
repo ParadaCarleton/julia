@@ -376,6 +376,22 @@ STATIC_INLINE void jl_thread_reset_allocd(jl_ptls_t ptls, int64_t allocd) JL_NOT
     jl_atomic_store_relaxed(&ptls->gc_tls_common.gc_num.allocd, allocd);
 }
 
+// Start a segment of the task's compile window on its current thread.
+// Inference timing and task switches open and close segments, so other tasks' bytes stay out.
+STATIC_INLINE void jl_compile_allocd_open(jl_task_t *ct) JL_NOTSAFEPOINT
+{
+    ct->compile_allocd_measured = jl_atomic_load_relaxed(&jl_measure_compile_time_enabled) != 0;
+    ct->compile_allocd_start = jl_thread_allocd_monotonic(ct->ptls);
+}
+
+// Charge the segment's bytes only if measurement spans it, so bytes before `@timed` stay out.
+STATIC_INLINE void jl_compile_allocd_close(jl_task_t *ct) JL_NOTSAFEPOINT
+{
+    if (ct->compile_allocd_measured && jl_atomic_load_relaxed(&jl_measure_compile_time_enabled))
+        jl_atomic_fetch_add_relaxed(&jl_cumulative_compile_allocd,
+            (uint64_t)(jl_thread_allocd_monotonic(ct->ptls) - ct->compile_allocd_start));
+}
+
 // Global *atomic* integer controlling *process-wide* task timing.
 extern JL_DLLEXPORT _Atomic(uint8_t) jl_task_metrics_enabled;
 

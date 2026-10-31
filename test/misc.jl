@@ -588,6 +588,22 @@ let f = gensym("f"), g = gensym("g"), gen = gensym("gen")
     end
 end
 @test Base.cumulative_compile_bytes() isa UInt64
+
+# a compile window that opened before measurement began charges none of its bytes;
+# a subprocess, since the test runner's own `@timed` keeps measurement on
+let script = """
+    @generated function late(x)
+        Base.donotdelete(zeros(UInt8, 10^7))
+        Base.cumulative_compile_timing(true)
+        return :(x)
+    end
+    late(1)
+    Base.cumulative_compile_timing(false)
+    print(Base.cumulative_compile_bytes())
+    """
+    @test parse(Int, read(`$(Base.julia_cmd()) --startup-file=no -e $script`, String)) < 10^7
+end
+
 let f = gensym("f"), callf = gensym("callf"), call2f = gensym("call2f")
     @eval begin
         $f(::Real) = 1
