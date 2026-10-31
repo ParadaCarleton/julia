@@ -2,22 +2,31 @@ name: Assemble main from feature branches
 on:
   schedule: [{ cron: "0 6 * * *" }]
   workflow_dispatch:
-  push: { branches-ignore: [main] }
+  pull_request: { types: [closed], branches: [main] }
+  push: { branches: [1.13/fork/ci] }
 permissions:
   contents: write
-  pull-requests: read
 concurrency: assemble-main
 jobs:
   assemble:
+    # A closed pull request assembles only when it was merged.
+    if: github.event_name != 'pull_request' || github.event.pull_request.merged
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with: { ref: 1.13/fork/ci, fetch-depth: 0, token: "${{ secrets.REBASE_TOKEN }}" }
-      - name: Rebase the CI branch, the listed branches and open pull requests; rebuild main
-        env:
-          GH_TOKEN: "${{ secrets.REBASE_TOKEN }}"
+      - uses: jdx/mise-action@v2
+        with:
+          install: false
+      # A global install survives the working-copy switches that delete a checked-out .tool-versions.
+      - run: mise use -g jj@0.46.0 ripgrep@latest
+      - run: echo "$HOME/.local/share/mise/shims" >> "$GITHUB_PATH"
+      - name: Rebase the CI branch and rebuild main
         run: |
           git config user.name github-actions && git config user.email github-actions@users.noreply.github.com
-          # The script checks out other commits, so run a copy of it.
-          cp .github/assemble.sh "$RUNNER_TEMP/assemble.sh"
-          bash "$RUNNER_TEMP/assemble.sh"
+          jj config set --user user.name github-actions
+          jj config set --user user.email github-actions@users.noreply.github.com
+          jj git init --git-repo .
+          # The script rewrites the working copy, so run a copy of it.
+          cp .github/assemble-jj.sh "$RUNNER_TEMP/assemble-jj.sh"
+          bash "$RUNNER_TEMP/assemble-jj.sh"
