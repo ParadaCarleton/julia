@@ -403,6 +403,7 @@ typedef enum {
     JL_API_BUILTIN,
     JL_API_MAX
 } jl_callingconv_t;
+static_assert(JL_API_OC_CALL == JL_IMAGE_ENTRY_OC_CALL, "the thunk for JL_API_OC_CALL drops the code instance");
 
 // Sub-divisions of some RefTags
 const uintptr_t BuiltinFunctionTag = ((uintptr_t)1 << (RELOC_TAG_OFFSET - 1));
