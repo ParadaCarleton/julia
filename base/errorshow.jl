@@ -1234,6 +1234,21 @@ function _is_julia_source(file::AbstractString)
 end
 
 """
+    _is_julia_source(frame::StackFrame)::Bool
+
+Whether `frame` belongs to Julia itself. A relative file names Base or Core only when the
+frame's module, if known, is theirs: `include_string` may give user code a Base file name.
+"""
+function _is_julia_source(frame::StackFrame)
+    m = parentmodule(frame)
+    file = string(frame.file)
+    if m !== nothing && !isabspath(fixup_stdlib_path(file)) && !(moduleroot(m) in (Base, Core))
+        return false
+    end
+    return _is_julia_source(file)
+end
+
+"""
     _backtrace_user_frames(trace::AbstractVector)
 
 Which frames of `trace` to keep when Julia's own are hidden, as a vector of flags: every
@@ -1241,7 +1256,7 @@ frame from code its user is working on, plus the frame each contiguous run of th
 into, which names what rejected the call.
 """
 function _backtrace_user_frames(trace::AbstractVector)
-    kept = [!_is_julia_source(string((entry[1]::StackFrame).file)) for entry in trace]
+    kept = [!_is_julia_source(entry[1]::StackFrame) for entry in trace]
     # a trace runs innermost-first, so the frame a run of user code called sits below it
     entered = falses(length(kept))
     entered[begin:(end - 1)] .= @view kept[(begin + 1):end]
