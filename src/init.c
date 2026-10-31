@@ -553,22 +553,29 @@ static int is_pathsep(char c) JL_NOTSAFEPOINT
 }
 
 #ifdef _OS_WINDOWS_
+#include <limits.h>
 // whether `path` is `prefix` or lies below it, ignoring case as NTFS does (ordinal, on UTF-16)
 static int path_has_prefix(const char *path, size_t len, const char *prefix) JL_NOTSAFEPOINT
 {
     if (prefix == NULL)
         return 0;
-    int wlen = MultiByteToWideChar(CP_UTF8, 0, path, (int)len, NULL, 0);
-    int wprefix_len = MultiByteToWideChar(CP_UTF8, 0, prefix, -1, NULL, 0) - 1;
-    if (wlen < wprefix_len)
+    // a path that does not convert to UTF-16 matches nothing
+    int wprefix_size = MultiByteToWideChar(CP_UTF8, 0, prefix, -1, NULL, 0); // counts the terminator
+    if (len > INT_MAX || wprefix_size <= 0)
+        return 0;
+    int wlen = len == 0 ? 0 : MultiByteToWideChar(CP_UTF8, 0, path, (int)len, NULL, 0);
+    int wprefix_len = wprefix_size - 1;
+    if ((len != 0 && wlen == 0) || wlen < wprefix_len)
         return 0;
     wchar_t *wpath = (wchar_t*)malloc_s((wlen + 1) * sizeof(wchar_t));
-    wchar_t *wprefix = (wchar_t*)malloc_s((wprefix_len + 1) * sizeof(wchar_t));
-    MultiByteToWideChar(CP_UTF8, 0, path, (int)len, wpath, wlen);
-    MultiByteToWideChar(CP_UTF8, 0, prefix, -1, wprefix, wprefix_len + 1);
-    int same = CompareStringOrdinal(wpath, wprefix_len, wprefix, wprefix_len, TRUE) == CSTR_EQUAL &&
+    wchar_t *wprefix = (wchar_t*)malloc_s(wprefix_size * sizeof(wchar_t));
+    int same = 0;
+    if ((len == 0 || MultiByteToWideChar(CP_UTF8, 0, path, (int)len, wpath, wlen) == wlen) &&
+        MultiByteToWideChar(CP_UTF8, 0, prefix, -1, wprefix, wprefix_size) == wprefix_size) {
+        same = CompareStringOrdinal(wpath, wprefix_len, wprefix, wprefix_len, TRUE) == CSTR_EQUAL &&
                (wlen == wprefix_len || wprefix_len == 0 || wprefix[wprefix_len - 1] == L'\\' ||
                 wprefix[wprefix_len - 1] == L'/' || wpath[wprefix_len] == L'\\' || wpath[wprefix_len] == L'/');
+    }
     free(wpath);
     free(wprefix);
     return same;

@@ -627,8 +627,9 @@ let exename = `$(Base.julia_cmd()) --startup-file=no --color=no`
 
         # a tracked path given through a symlink matches files loaded through it
         if !Sys.iswindows()
-            mktempdir() do parent
-                real = realpath(mkdir(joinpath(parent, "Real")))
+            mktempdir() do tmpdir
+                parent = realpath(tmpdir) # a symlinked TMPDIR would make the fixture spellings differ
+                real =realpath(mkdir(joinpath(parent, "Real")))
                 link = joinpath(parent, "Link")
                 symlink(real, link)
                 siblings = [mkdir(joinpath(parent, name)) for name in ("Link_sibling", "Real_sibling")]
