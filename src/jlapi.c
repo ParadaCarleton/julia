@@ -10,7 +10,6 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
-#include <ctype.h>
 #include "julia.h"
 #include "options.h"
 #include "julia_assert.h"
@@ -1200,71 +1199,57 @@ static char *abspath(const char *in, int nprefix)
         if (uv_cwd(path, &path_size)) {
             jl_error("fatal error: unexpected error while retrieving current working directory");
         }
-        const char *rel = in + nprefix;
-#ifdef _OS_WINDOWS_
-        // `C:rel` is relative to the working directory when that is on drive `C:`
-        if (rel[0] && rel[1] == ':' && path[1] == ':' && toupper((unsigned char)rel[0]) == toupper((unsigned char)path[0])) {
-            rel += 2;
-            sz -= 2;
-        }
-#endif
         out = (char*)malloc_s(path_size + 1 + sz + nprefix);
         memcpy(out, in, nprefix);
         memcpy(out + nprefix, path, path_size);
         out[nprefix + path_size] = PATHSEPSTRING[0];
-        memcpy(out + nprefix + path_size + 1, rel, sz);
+        memcpy(out + nprefix + path_size + 1, in + nprefix, sz);
         free(path);
     }
     return out;
 }
 
-static char *normpath(char *path)
-{ // lexically drop `.`, `..` and repeated separators of an absolute path in place, as `Base.normpath` does
-    const char sep = PATHSEPSTRING[0];
-    char *in = path, *out = path;
+static char *abspath_normalized(const char *in)
+{ // an absolute path with `.`, `..` and repeated separators dropped, as `Base.abspath` gives it, keeping symlinks
 #ifdef _OS_WINDOWS_
-    for (char *c = path; *c; c++)
-        if (*c == '/')
-            *c = sep;
-    if (in[0] == sep && in[1] == sep) { // keep a UNC root `\\server\share` whole
-        int seps = 0;
-        while (*in && (*in != sep || ++seps < 4))
-            *out++ = *in++;
-    }
-    else {
-        if (isalpha((unsigned char)in[0]) && in[1] == ':') {
-            in += 2;
-            out += 2;
-        }
-        if (*in == sep)
-            *out++ = sep;
-    }
+    // the system resolves drive-relative, UNC and `\\?\` paths
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, *in ? in : ".", -1, NULL, 0);
+    wchar_t *win = (wchar_t*)malloc_s(wlen * sizeof(wchar_t));
+    MultiByteToWideChar(CP_UTF8, 0, *in ? in : ".", -1, win, wlen);
+    wchar_t *wout = _wfullpath(NULL, win, 0);
+    free(win);
+    if (wout == NULL)
+        jl_errorf("fatal error: could not make path \"%s\" absolute", in);
+    int len = WideCharToMultiByte(CP_UTF8, 0, wout, -1, NULL, 0, NULL, NULL);
+    char *out = (char*)malloc_s(len);
+    WideCharToMultiByte(CP_UTF8, 0, wout, -1, out, len, NULL, NULL);
+    free(wout);
+    return out;
 #else
-    if (*in == sep)
-        *out++ = sep;
-#endif
-    char *root = out;
-    while (*in) {
-        while (*in == sep)
-            in++;
-        const char *component = in;
-        while (*in && *in != sep)
-            in++;
-        size_t n = in - component;
+    char *path = abspath(in, 0);
+    char *src = path, *out = path + 1; // keep the leading `/`
+    while (*src) {
+        while (*src == '/')
+            src++;
+        const char *component = src;
+        while (*src && *src != '/')
+            src++;
+        size_t n = src - component;
         if (n == 0 || (n == 1 && component[0] == '.'))
             continue;
         if (n == 2 && component[0] == '.' && component[1] == '.') {
-            while (out > root && *--out != sep)
+            while (out > path + 1 && *--out != '/')
                 ;
             continue;
         }
-        if (out > path && out[-1] != sep)
-            *out++ = sep;
+        if (out > path + 1)
+            *out++ = '/';
         memmove(out, component, n);
         out += n;
     }
     *out = '\0';
     return path;
+#endif
 }
 
 static char *absrealpath(const char *in, int nprefix)
@@ -1359,7 +1344,7 @@ static void jl_resolve_sysimg_location(JL_IMAGE_SEARCH rel, const char* julia_bi
     if (jl_options.output_code_coverage)
         jl_options.output_code_coverage = absformat(jl_options.output_code_coverage);
     if (jl_options.tracked_path) {
-        jl_tracked_path_unresolved = normpath(abspath(jl_options.tracked_path, 0));
+        jl_tracked_path_unresolved = abspath_normalized(jl_options.tracked_path);
         jl_options.tracked_path = absrealpath(jl_options.tracked_path, 0);
     }
 
