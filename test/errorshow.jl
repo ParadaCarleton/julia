@@ -1675,6 +1675,9 @@ end
     @test !Base._is_julia_source("REPL[1]")
     @test !Base._is_julia_source("none")
     @test !Base._is_julia_source(@__FILE__)
+    # `include_string` names a file relative to nothing, which Base's own do not share
+    @test Base._is_julia_source("./array.jl")
+    @test !Base._is_julia_source("user_code.jl")
     # Julia's test suite and a depot living beside its sources are not Julia's own code
     sharedir = abspath(Sys.BINDIR, Base.DATAROOTDIR, "julia")
     @test !Base._is_julia_source(joinpath(sharedir, "test", "errorshow.jl"))
