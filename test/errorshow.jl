@@ -1700,6 +1700,13 @@ end
         # a package checked out for development is the user's own code
         @test !Base._is_julia_source(joinpath(depot, "dev", "Example", "src", "Example.jl"))
     end
+    saved = copy(DEPOT_PATH)
+    try
+        copy!(DEPOT_PATH, ["relative-depot"])
+        @test Base._is_julia_source(abspath("relative-depot", "packages", "Pkg", "src", "Pkg.jl"))
+    finally
+        copy!(DEPOT_PATH, saved)
+    end
 end
 
 module RecursiveTraces
