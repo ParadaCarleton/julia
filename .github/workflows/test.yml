@@ -25,6 +25,11 @@ jobs:
       # The release targets: precompile.jl needs several, and math.jl expects FMA in Base when the CPU has it.
       - id: build
         run: make -j$(nproc) JULIA_CPU_TARGET="$JULIA_CPU_TARGET"
+      # The generated stdlib files must match vendored.toml, and the vendored packages must load.
+      - if: ${{ matrix.shard == 1 }}
+        run: |
+          ./julia --startup-file=no contrib/vendor_stdlibs.jl --check
+          ./julia --startup-file=no -e 'using Revise, PackageCompiler'
       # The runner's resolver fails reverse lookups that Sockets' getnameinfo test expects to succeed.
       - run: echo '255.255.255.0 netmask' | sudo tee -a /etc/hosts
       # rr refuses to record at the runner's default perf_event_paranoid of 4.
