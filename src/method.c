@@ -1375,9 +1375,12 @@ JL_DLLEXPORT jl_method_t* jl_method_def(jl_svec_t *argdata,
 
     if (jl_get_module_strict(module) == 1) {
         // argtype is the finished signature; reject before touching the method table
-        static jl_value_t *check_method_definition = NULL;
-        if (check_method_definition == NULL && jl_base_module != NULL)
+        static _Atomic(jl_value_t*) check_method_cache = NULL;
+        jl_value_t *check_method_definition = jl_atomic_load_relaxed(&check_method_cache);
+        if (check_method_definition == NULL && jl_base_module != NULL) {
             check_method_definition = jl_get_global(jl_base_module, jl_symbol("_check_method_definition"));
+            jl_atomic_store_relaxed(&check_method_cache, check_method_definition);
+        }
         if (!check_method_definition)
             jl_error("strict mode is not available during bootstrap");
         jl_value_t **fargs;

@@ -96,6 +96,22 @@ end
     @test which(show, Tuple{IO, Int, Bool, Char}).module === Vendor.Lax
 end
 
+@testset "JULIA_STRICT defaults user modules to strict and leaves Base alone" begin
+    script = """
+        # Base defining a method of a Core type on Core arguments would be piracy if Base were strict.
+        Core.eval(Base, :((::Type{Core.TypeError})(::Signed, ::Signed, ::Signed, ::Signed, ::Signed) = nothing))
+        module Pirate end
+        try
+            Core.eval(Pirate, :(Base.show(::IO, ::Signed, ::AbstractChar, ::AbstractChar) = nothing))
+            print("accepted")
+        catch err
+            print(nameof(typeof(err)))
+        end
+        """
+    cmd = addenv(`$(Base.julia_cmd()) --startup-file=no -e $script`, "JULIA_STRICT" => "1")
+    @test read(cmd, String) == "StrictModeError"
+end
+
 @testset "error names the module and the owners" begin
     err = try
         Core.eval(Vendor, :(Base.show(io::IO, ::Float32) = nothing))
