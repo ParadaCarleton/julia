@@ -1653,6 +1653,15 @@ end
     @test !all_internal[]
     @test !occursin("⋮", whole)
 
+    function locations(flags...)
+        found = Tuple{String, Int}[]
+        render(IOContext(IOBuffer(), :last_shown_line_infos => found, flags...))
+        return found
+    end
+    # the REPL's editor shortcut finds a frame by the number the full trace gives it
+    @test locations(:stacktrace_frames_hidden => hidden) == locations() ==
+          [(string(entry[1].file), entry[1].line) for entry in trace]
+
     # asking for abbreviation outright needs no flag to carry the request
     withenv("JULIA_STACKTRACE_ABBREVIATED" => "true") do
         @test occursin("⋮ internal", render(IOContext(IOBuffer())))
