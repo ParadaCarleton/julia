@@ -885,6 +885,10 @@ function show_processed_backtrace(io::IO, trace::Vector, num_frames::Int, repeat
                 run_from, run_depth, run_starts = i, nactive_cycles, ncycle_starts
             end
             run_to = i
+            # the REPL editor shortcut looks a frame up by its position in the full trace
+            if haskey(io, :last_shown_line_infos)
+                push!(io[:last_shown_line_infos], (string(frame.file), frame.line))
+            end
             # and ends where a cycle closes, so the closing line follows the frames it covers
             if !isempty(current_cycles) && current_cycles[end][1] + current_cycles[end][2] - 1 == i
                 flush_hidden()
