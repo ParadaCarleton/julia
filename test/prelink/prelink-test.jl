@@ -58,11 +58,13 @@ end
     # pre-relocated for another address, and an image with several code
     # variants, which needs a base image that carries the same variants.
     for (what, cmd, message) in (
-            ("an image that is pre-relocated already", `$prelinked`, "pre-relocated already"),
-            ("a program that moves at every start", `$pie`, "moves at every start"))
+            ("an image that is pre-relocated already", `$prelinked --julia-args`, "pre-relocated already"),
+            ("a program that moves at every start", `$pie --julia-args`, "moves at every start"),
+            ("an image restored without its native code",
+             `$program --julia-args --sysimage-native-code=no`, "needs its native code"))
         @testset "$what" begin
             output = tempname()
-            code, out, err = run_program(`$cmd --julia-args --output-prelinked=$output`)
+            code, out, err = run_program(`$cmd --output-prelinked=$output`)
             @test code == 1
             @test occursin(message, err)
             @test !isfile(output)

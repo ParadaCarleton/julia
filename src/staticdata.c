@@ -4301,7 +4301,8 @@ static void jl_restore_system_image_from_stream_(ios_t *f, jl_image_t *image,
     int prelinked = prelink_base != 0;
     if (prelinked && prelink_base != (uintptr_t)f->buf)
         prelink_failed("the image was pre-relocated for another address than the one it is at");
-    if (prelinked && image->fptrs.nptrs == 0)
+    // A copy written without the native code (`--sysimage-native-code=no`) would not start.
+    if ((prelinked || prelink_output != NULL) && image->fptrs.nptrs == 0)
         prelink_failed("a pre-relocated image needs its native code");
     if (prelink_output != NULL && prelinked)
         prelink_failed("the image is pre-relocated already");
