@@ -190,6 +190,8 @@ typedef struct {
 // size so the image object has one shape; the runtime checks that it fits.
 #define JL_IMAGE_ENTRY_CONVENTIONS 8
 #define JL_IMAGE_ENTRY_THUNKS 128
+// The convention slot whose target, `jl_f_opaque_closure_call`, takes no code instance.
+#define JL_IMAGE_ENTRY_OC_CALL 4
 
 //The root struct for images, points to all the other globals
 typedef struct {

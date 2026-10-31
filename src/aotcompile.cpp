@@ -2406,11 +2406,12 @@ void jl_dump_native_impl(void *native_code,
                                             "jl_image_entry_targets");
             SmallVector<Constant*, JL_IMAGE_ENTRY_THUNKS> entry_thunk_ptrs;
             for (size_t i = 0; i < JL_IMAGE_ENTRY_THUNKS; i++) {
-                // A calling convention takes the code instance as its fourth argument; a
-                // builtin does not.
-                FunctionType *FT = i < JL_IMAGE_ENTRY_CONVENTIONS ?
-                    FunctionType::get(T_ptr, {T_ptr, T_ptr, T_thunk_int32, T_ptr}, false) :
-                    FunctionType::get(T_ptr, {T_ptr, T_ptr, T_thunk_int32}, false);
+                // A calling convention is called with the code instance as its fourth
+                // argument; a builtin, and the opaque-closure target, take only three.
+                auto FT3 = FunctionType::get(T_ptr, {T_ptr, T_ptr, T_thunk_int32}, false);
+                auto FT4 = FunctionType::get(T_ptr, {T_ptr, T_ptr, T_thunk_int32, T_ptr}, false);
+                FunctionType *FT = i < JL_IMAGE_ENTRY_CONVENTIONS ? FT4 : FT3;
+                FunctionType *target_FT = i < JL_IMAGE_ENTRY_CONVENTIONS && i != JL_IMAGE_ENTRY_OC_CALL ? FT4 : FT3;
                 auto thunk = Function::Create(FT, GlobalValue::InternalLinkage,
                                               "jl_image_entry_thunk_" + std::to_string(i), metadataM);
                 IRBuilder<> thunk_builder(BasicBlock::Create(Context, "top", thunk));
@@ -2418,9 +2419,11 @@ void jl_dump_native_impl(void *native_code,
                 auto target = thunk_builder.CreateAlignedLoad(T_ptr, slot, Align(sizeof(void*)));
                 SmallVector<Value*, 4> thunk_args;
                 for (auto &argument : thunk->args())
-                    thunk_args.push_back(&argument);
-                auto forwarded = thunk_builder.CreateCall(FT, target, thunk_args);
-                forwarded->setTailCallKind(CallInst::TCK_MustTail);
+                    if (thunk_args.size() < target_FT->getNumParams())
+                        thunk_args.push_back(&argument);
+                auto forwarded = thunk_builder.CreateCall(target_FT, target, thunk_args);
+                // musttail needs matching prototypes; the dropping thunk makes a plain tail call.
+                forwarded->setTailCallKind(FT == target_FT ? CallInst::TCK_MustTail : CallInst::TCK_Tail);
                 thunk_builder.CreateRet(forwarded);
                 entry_thunk_ptrs.push_back(thunk);
             }
