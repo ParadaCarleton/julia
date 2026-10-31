@@ -858,7 +858,7 @@ typedef struct _jl_module_t {
     int8_t infer;
     uint8_t istopmod;
     int8_t max_methods;
-    int8_t strict; // reject method definitions this module's package does not own
+    _Atomic(int8_t) strict; // reject method definitions this module's package does not own
     // If cleared no binding partition in this module has PARTITION_FLAG_EXPORTED and min_world > jl_require_world.
     _Atomic(int8_t) export_set_changed_since_require_world;
     jl_mutex_t lock;
