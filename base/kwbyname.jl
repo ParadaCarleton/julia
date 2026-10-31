@@ -23,13 +23,14 @@ function nameable_parameters(m::Method)::Vector{Symbol}
 end
 
 """
-    name_order(m::Method, npositional::Integer, given::Tuple{Vararg{Symbol}}) -> Union{Vector{Symbol},Nothing}
+    name_order(m::Method, npositional::Integer, given::Tuple{Vararg{Symbol}}, world::Integer) -> Union{Vector{Symbol},Nothing}
 
 Names that must be read from keyword arguments, in declaration order, to complete
 a call to `m` that already supplies `npositional` leading positional arguments.
-`nothing` when `given` cannot complete `m`.
+`nothing` when `given` cannot complete `m`. The keywords `m` declares are read
+from its keyword sorter in `world`.
 """
-function name_order(m::Method, npositional::Integer, given::Tuple{Vararg{Symbol}})::Union{Vector{Symbol},Nothing}
+function name_order(m::Method, npositional::Integer, given::Tuple{Vararg{Symbol}}, world::Integer)::Union{Vector{Symbol},Nothing}
     slots = nameable_parameters(m)
     if npositional > length(slots)
         return nothing
@@ -43,7 +44,7 @@ function name_order(m::Method, npositional::Integer, given::Tuple{Vararg{Symbol}
     if !issubset(order, given) || any(name -> startswith(String(name), "#"), order)
         return nothing
     end
-    keywords = kwarg_decl(m)
+    keywords = kwarg_decl(m; world)
     if any(name -> endswith(String(name), "..."), keywords)
         return order
     end
@@ -76,13 +77,13 @@ function keyword_types(@nospecialize(kwtype::Type))::NamedTuple
 end
 
 """
-    fitted_order(m::Method, ftype::Type, argtypes::Tuple, kwargtypes::NamedTuple) -> Union{Vector{Symbol},Nothing}
+    fitted_order(m::Method, ftype::Type, argtypes::Tuple, kwargtypes::NamedTuple, world::Integer) -> Union{Vector{Symbol},Nothing}
 
 [`name_order`](@ref) for `m`, kept only when the reordered argument types also
 match `m`'s signature.
 """
-function fitted_order(m::Method, @nospecialize(ftype::Type), argtypes::Tuple, kwargtypes::NamedTuple)::Union{Vector{Symbol},Nothing}
-    order = name_order(m, length(argtypes), keys(kwargtypes))
+function fitted_order(m::Method, @nospecialize(ftype::Type), argtypes::Tuple, kwargtypes::NamedTuple, world::Integer)::Union{Vector{Symbol},Nothing}
+    order = name_order(m, length(argtypes), keys(kwargtypes), world)
     if order === nothing
         return nothing
     end
@@ -108,7 +109,7 @@ function by_name_orders(@nospecialize(ftype::Type), argtypes::Tuple, kwargtypes:
     if !isa(matches, Vector)
         return Vector{Symbol}[]
     end
-    orders = (fitted_order((match::Core.MethodMatch).method, ftype, argtypes, kwargtypes)
+    orders = (fitted_order((match::Core.MethodMatch).method, ftype, argtypes, kwargtypes, world)
               for match in matches)
     return unique([order for order in orders if order !== nothing])
 end
