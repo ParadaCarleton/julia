@@ -5287,8 +5287,7 @@ JL_DLLEXPORT uint64_t jl_typeinf_timing_begin(void)
     if (ct->reentrant_timing & 1)
         return 0;
     ct->reentrant_timing |= 1;
-    ct->typeinf_start_tid = ct->ptls->tid;
-    ct->typeinf_start_allocd = jl_thread_allocd_monotonic(ct->ptls);
+    jl_compile_allocd_open(ct);
     return jl_hrtime();
 }
 
@@ -5297,17 +5296,13 @@ JL_DLLEXPORT void jl_typeinf_timing_end(uint64_t start, int is_recompile)
     if (!start)
         return;
     jl_task_t *ct = jl_current_task;
+    jl_compile_allocd_close(ct);
     ct->reentrant_timing &= ~1u;
     if (jl_atomic_load_relaxed(&jl_measure_compile_time_enabled)) {
         uint64_t inftime = jl_hrtime() - start;
         jl_atomic_fetch_add_relaxed(&jl_cumulative_compile_time, inftime);
         if (is_recompile) {
             jl_atomic_fetch_add_relaxed(&jl_cumulative_recompile_time, inftime);
-        }
-        // per-thread counters cannot measure a task that migrated, so its bytes are dropped
-        if (ct->ptls->tid == ct->typeinf_start_tid) {
-            int64_t allocd = jl_thread_allocd_monotonic(ct->ptls) - ct->typeinf_start_allocd;
-            jl_atomic_fetch_add_relaxed(&jl_cumulative_compile_allocd, (uint64_t)allocd);
         }
     }
 }

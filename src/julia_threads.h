@@ -295,9 +295,9 @@ typedef struct _jl_task_t {
     jl_handler_t *eh;
     // saved thread state
     jl_ucontext_t ctx; // pointer into stkbuf, if suspended
-    // thread and its `jl_thread_allocd_monotonic` when the outermost inference timing began
-    int16_t typeinf_start_tid;
-    int64_t typeinf_start_allocd;
+    // open compile-allocation segment: whether it is measured, and its starting thread count
+    uint8_t compile_allocd_measured;
+    int64_t compile_allocd_start;
 } jl_task_t;
 
 JL_DLLEXPORT void *jl_get_ptls_states(void);
