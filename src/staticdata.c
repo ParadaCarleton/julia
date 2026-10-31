@@ -255,7 +255,7 @@ static size_t reactive_base_file_extent = 0; // the sysimg extent of the base FI
 
 // The overlay image (Stage G): the delta as a shared object of its own,
 // with the blob below; the loader applies a chain of them to the base.
-#define REACTIVE_OVERLAY_MAGIC 0x324c5245564f4c4aULL   // "JLOVERL2": the sysimg patches are objects
+#define REACTIVE_OVERLAY_MAGIC 0x334c5245564f4c4aULL   // "JLOVERL3": the header names the base by its checksum
 typedef struct {
     uint64_t offset;             // in the sysimg
     uint64_t size;
@@ -288,8 +288,10 @@ typedef struct {
     uint64_t off_roots;
     uint32_t external_fns_begin;
     uint32_t ngvars;
-    uint64_t reserved[4];
+    uint64_t base_checksum;      // `jl_system_image_checksum` of the base image of the chain
+    uint64_t reserved[3];
 } reactive_overlay_header_t;
+static uint32_t reactive_base_checksum = 0;         // the checksum of the base image loaded through the region
 static int reactive_overlay_on = 0;                 // this save writes an overlay
 static reactive_overlay_header_t reactive_overlay_header;
 static size_t reactive_overlay_blob_start = 0;      // the position of the blob in the output stream
@@ -4049,6 +4051,7 @@ static void reactive_overlay_emit(ios_t *f, ios_t *sysimg, ios_t *const_data, io
     h->base_sysimg_size = reactive_sysimg_size;
     h->base_const_size = reactive_const_len;
     h->base_syms_size = reactive_syms_len;
+    h->base_checksum = reactive_base_checksum;
     h->external_fns_begin = external_fns_begin;
     h->ngvars = gvar->size / sizeof(reloc_t);
     reactive_overlay_blob_start = ios_pos(f);
@@ -6731,6 +6734,7 @@ static int reactive_region_load(jl_image_buf_t buf)
     close(fd);
     reactive_region_base = region;
     reactive_region_span = span;
+    reactive_base_checksum = buf.checksum;
     reactive_region_const = region + const_start;
     reactive_region_const_limit = region + const_limit;
     reactive_gap_lo = region + mapped;
@@ -6834,6 +6838,9 @@ static void reactive_chain_load(jl_image_t *image)
         const reactive_overlay_header_t *h = (const reactive_overlay_header_t*)ob.data;
         if (ob.size < sizeof(*h) || h->magic != REACTIVE_OVERLAY_MAGIC)
             jl_errorf("reactive: overlay %s is not an overlay image", path);
+        if (h->base_checksum != reactive_base_checksum)
+            jl_errorf("reactive: overlay %s extends a base image of checksum %08x; %s has checksum %08x", path,
+                      (unsigned)h->base_checksum, image_file, (unsigned)reactive_base_checksum);
         if (h->base_sysimg_size != reactive_sections.sysimg.size || h->base_const_size != reactive_sections.const_data.size ||
             h->base_syms_size != reactive_sections.symbols.size || h->page_size != page)
             jl_errorf("reactive: overlay %s extends another state (sysimg %zu, const %zu, symbols %zu; loaded %zu, %zu, %zu)", path,
