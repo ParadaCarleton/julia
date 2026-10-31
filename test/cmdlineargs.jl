@@ -676,6 +676,17 @@ let exename = `$(Base.julia_cmd()) --startup-file=no --color=no`
                     end
                     @test occursin("$option=@$(joinpath(parent, "outer"))", forwarded)
                 end
+                # the lexical target (`parent/src`) is absent, so the resolved `outer/src` is tracked
+                src_dir = mkpath(joinpath(parent, "outer", "src"))
+                write(joinpath(src_dir, "deep.jl"), "f(x) = x + 1\nf(1)\n")
+                @test !ispath(joinpath(parent, "src"))
+                @test covers("Deep/../src", joinpath(src_dir, "deep.jl"))
+                for option in ("--code-coverage", "--track-allocation")
+                    forwarded = cd(parent) do
+                        readchomp(`$cov_exename $option=@Deep/../src -e 'print(Base.julia_cmd())'`)
+                    end
+                    @test occursin("$option=@$src_dir", forwarded)
+                end
             end
         end
 

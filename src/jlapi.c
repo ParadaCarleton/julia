@@ -1350,9 +1350,12 @@ static void jl_resolve_sysimg_location(JL_IMAGE_SEARCH rel, const char* julia_bi
         // the parent of Link's target); keep the spelling only if it is the same directory
         char *unresolved_real = absrealpath(unresolved, 0);
         uv_fs_t req;
-        int exists = uv_fs_stat(NULL, &req, unresolved, NULL) == 0;
+        int alias_exists = uv_fs_stat(NULL, &req, unresolved, NULL) == 0;
         uv_fs_req_cleanup(&req);
-        if (!exists || strcmp(unresolved_real, jl_options.tracked_path) == 0)
+        int original_exists = uv_fs_stat(NULL, &req, jl_options.tracked_path, NULL) == 0;
+        uv_fs_req_cleanup(&req);
+        // an alias absent from disk is trusted only when the original is absent too
+        if ((!alias_exists && !original_exists) || strcmp(unresolved_real, jl_options.tracked_path) == 0)
             jl_tracked_path_unresolved = unresolved;
         else
             free(unresolved);
