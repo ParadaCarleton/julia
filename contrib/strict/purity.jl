@@ -4,8 +4,6 @@
 
 const CC = isdefined(Base, :Compiler) ? Base.Compiler : Core.Compiler
 
-const SPECS_PER_METHOD = 5  # bound the work; methods vary little across specializations
-
 struct PurityInterp <: CC.AbstractInterpreter
     trust_ccall::Bool
     world::UInt
@@ -61,9 +59,6 @@ function specializations(m::Method)
             continue
         end
         push!(out, Tuple{args...})
-        if length(out) == SPECS_PER_METHOD
-            break
-        end
     end
     return out
 end
