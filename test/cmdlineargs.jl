@@ -631,13 +631,21 @@ let exename = `$(Base.julia_cmd()) --startup-file=no --color=no`
                 real = realpath(mkdir(joinpath(parent, "Real")))
                 link = joinpath(parent, "Link")
                 symlink(real, link)
-                write(joinpath(real, "linked.jl"), "f(x) = x + 1\nf(1)\n")
+                siblings = [mkdir(joinpath(parent, name)) for name in ("Link_sibling", "Real_sibling")]
+                for d in (real, siblings...)
+                    write(joinpath(d, "linked.jl"), "f(x) = x + 1\nf(1)\n")
+                end
                 outfile = joinpath(dir, "linked.info")
-                for (tracked, loaded) in ((link, link), (link, real), (real, real), (real, link))
-                    srcfile = joinpath(loaded, "linked.jl")
-                    run(`$cov_exename --code-coverage=$outfile --code-coverage=@$tracked $srcfile`)
+                function covers(tracked, srcfile)
+                    cd(parent) do
+                        run(`$cov_exename --code-coverage=$outfile --code-coverage=@$tracked $srcfile`)
+                    end
                     covered = contains(read(outfile, String), "SF:$srcfile")
                     rm(outfile)
+                    return covered
+                end
+                for (tracked, loaded) in ((link, link), (link, real), (real, real), (real, link))
+                    covered = covers(tracked, joinpath(loaded, "linked.jl"))
                     # files are compared unresolved, so a symlink below the tracked realpath is missed
                     if (tracked, loaded) == (real, link)
                         @test_broken covered
@@ -645,6 +653,11 @@ let exename = `$(Base.julia_cmd()) --startup-file=no --color=no`
                         @test covered
                     end
                 end
+                # the tracked path is matched by whole components after `.`, `..` and `//` are dropped
+                @test covers("./Link//", joinpath(link, "linked.jl"))
+                @test covers("Real/../Link", joinpath(link, "linked.jl"))
+                @test !covers(link, joinpath(siblings[1], "linked.jl"))
+                @test !covers(real, joinpath(siblings[2], "linked.jl"))
             end
         end
 

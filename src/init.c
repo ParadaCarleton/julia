@@ -541,12 +541,30 @@ int jl_isabspath(const char *in) JL_NOTSAFEPOINT
 }
 
 // the tracked path as given, made absolute: files loaded through its symlinks match it
-const char *jl_tracked_path_unresolved = NULL;
+JL_DLLEXPORT const char *jl_tracked_path_unresolved = NULL;
 
+static int is_pathsep(char c) JL_NOTSAFEPOINT
+{
+#ifdef _OS_WINDOWS_
+    return c == '/' || c == '\\';
+#else
+    return c == '/';
+#endif
+}
+
+// whether `path` is `prefix` or lies below it; `/a/b` does not hold `/a/bc`
 static int path_has_prefix(const char *path, size_t len, const char *prefix) JL_NOTSAFEPOINT
 {
-    size_t prefix_len = prefix ? strlen(prefix) : 0;
-    return prefix && len >= prefix_len && strncmp(path, prefix, prefix_len) == 0;
+    if (prefix == NULL)
+        return 0;
+    size_t prefix_len = strlen(prefix);
+#ifdef _OS_WINDOWS_
+    int same = len >= prefix_len && _strnicmp(path, prefix, prefix_len) == 0; // Windows paths ignore case
+#else
+    int same = len >= prefix_len && strncmp(path, prefix, prefix_len) == 0;
+#endif
+    return same &&
+           (len == prefix_len || prefix_len == 0 || is_pathsep(prefix[prefix_len - 1]) || is_pathsep(path[prefix_len]));
 }
 
 JL_DLLEXPORT int jl_path_is_tracked(const char *path, size_t len) JL_NOTSAFEPOINT
