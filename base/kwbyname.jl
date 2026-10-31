@@ -39,7 +39,8 @@ function name_order(m::Method, npositional::Integer, given::Tuple{Vararg{Symbol}
     if isempty(order)
         return nothing
     end
-    if !issubset(order, given)
+    # An unnamed parameter's `#unused#` placeholder is no name a caller wrote.
+    if !issubset(order, given) || any(name -> startswith(String(name), "#"), order)
         return nothing
     end
     keywords = kwarg_decl(m)
@@ -119,7 +120,7 @@ Whether [`kwcall_by_name`](@ref) completes `f(args...; kwargs...)`.
 """
 function by_name_applicable(kwargs::NamedTuple, @nospecialize(f), args::Tuple)::Bool
     orders = by_name_orders(Core.Typeof(f), map(Core.Typeof, args),
-                            map(Core.Typeof, kwargs), get_world_counter())
+                            map(Core.Typeof, kwargs), tls_world_age())
     return length(orders) == 1
 end
 
@@ -131,7 +132,7 @@ Whether a keyword sorter, rather than the by-name fallback, handles
 """
 function resolves_without_fallback(kwargs::NamedTuple, args::Tuple)::Bool
     sig = Tuple{typeof(Core.kwcall), typeof(kwargs), map(Core.Typeof, args)...}
-    match = ccall(:jl_gf_invoke_lookup, Any, (Any, Any, UInt), sig, nothing, get_world_counter())
+    match = ccall(:jl_gf_invoke_lookup, Any, (Any, Any, UInt), sig, nothing, tls_world_age())
     if match === nothing
         return false
     end
@@ -153,7 +154,7 @@ end
 function kwcall_by_name(kwargs::NamedTuple, @nospecialize(f), args::Tuple)
     @noinline
     orders = by_name_orders(Core.Typeof(f), map(Core.Typeof, args),
-                            map(Core.Typeof, kwargs), get_world_counter())
+                            map(Core.Typeof, kwargs), tls_world_age())
     if isempty(orders)
         throw(MethodError(Core.kwcall, (kwargs, f, args...), tls_world_age()))
     end
@@ -215,6 +216,12 @@ function kwcall_by_name_generator(world::Integer, source::Method, @nospecialize(
         return stub(world, source, deferred)
     end
     argtypes = Tuple(given)
+    # Run time resolves on each value's own type, so a wider declared field type
+    # or a type value (seen here as `DataType`) must resolve there too.
+    kwvaltypes = kwtype.parameters[2]
+    if !isdispatchtuple(Tuple{argtypes..., kwvaltypes.parameters...}) || any(T -> T <: Type, kwvaltypes.parameters)
+        return stub(world, source, deferred)
+    end
     orders = by_name_orders(ftype, argtypes, keyword_types(kwtype), world)
     if length(orders) != 1
         return stub(world, source, deferred)
