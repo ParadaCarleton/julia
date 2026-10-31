@@ -358,6 +358,39 @@ JL_DLLEXPORT void jl_typeinf_timing_end(uint64_t start, int is_recompile) JL_NOT
 extern JL_DLLEXPORT _Atomic(uint8_t) jl_measure_compile_time_enabled;
 extern JL_DLLEXPORT _Atomic(uint64_t) jl_cumulative_compile_time;
 extern JL_DLLEXPORT _Atomic(uint64_t) jl_cumulative_recompile_time;
+extern JL_DLLEXPORT _Atomic(uint64_t) jl_cumulative_compile_allocd;
+
+// Bytes this thread has allocated, offset by a constant; only differences are meaningful.
+STATIC_INLINE int64_t jl_thread_allocd_monotonic(jl_ptls_t ptls) JL_NOTSAFEPOINT
+{
+    return jl_atomic_load_relaxed(&ptls->gc_tls_common.gc_num.allocd) +
+           jl_atomic_load_relaxed(&ptls->gc_tls_common.gc_num.allocd_flushed);
+}
+
+// Reset the thread's `allocd` without changing `jl_thread_allocd_monotonic`.
+STATIC_INLINE void jl_thread_reset_allocd(jl_ptls_t ptls, int64_t allocd) JL_NOTSAFEPOINT
+{
+    int64_t old = jl_atomic_load_relaxed(&ptls->gc_tls_common.gc_num.allocd);
+    jl_atomic_store_relaxed(&ptls->gc_tls_common.gc_num.allocd_flushed,
+        jl_atomic_load_relaxed(&ptls->gc_tls_common.gc_num.allocd_flushed) + old - allocd);
+    jl_atomic_store_relaxed(&ptls->gc_tls_common.gc_num.allocd, allocd);
+}
+
+// Start a segment of the task's compile window on its current thread.
+// Inference timing and task switches open and close segments, so other tasks' bytes stay out.
+STATIC_INLINE void jl_compile_allocd_open(jl_task_t *ct) JL_NOTSAFEPOINT
+{
+    ct->compile_allocd_measured = jl_atomic_load_relaxed(&jl_measure_compile_time_enabled) != 0;
+    ct->compile_allocd_start = jl_thread_allocd_monotonic(ct->ptls);
+}
+
+// Charge the segment's bytes only if measurement spans it, so bytes before `@timed` stay out.
+STATIC_INLINE void jl_compile_allocd_close(jl_task_t *ct) JL_NOTSAFEPOINT
+{
+    if (ct->compile_allocd_measured && jl_atomic_load_relaxed(&jl_measure_compile_time_enabled))
+        jl_atomic_fetch_add_relaxed(&jl_cumulative_compile_allocd,
+            (uint64_t)(jl_thread_allocd_monotonic(ct->ptls) - ct->compile_allocd_start));
+}
 
 // Global *atomic* integer controlling *process-wide* task timing.
 extern JL_DLLEXPORT _Atomic(uint8_t) jl_task_metrics_enabled;

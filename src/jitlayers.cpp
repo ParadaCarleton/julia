@@ -887,8 +887,10 @@ void jl_generate_fptr_for_unspecialized_impl(jl_code_instance_t *unspec)
     }
     auto ct = jl_current_task;
     bool timed = (ct->reentrant_timing & 1) == 0;
-    if (timed)
+    if (timed) {
         ct->reentrant_timing |= 1;
+        jl_compile_allocd_open(ct);
+    }
     uint64_t compiler_start_time = 0;
     uint8_t measure_compile_time_enabled = jl_atomic_load_relaxed(&jl_measure_compile_time_enabled);
     if (measure_compile_time_enabled)
@@ -936,6 +938,7 @@ void jl_generate_fptr_for_unspecialized_impl(jl_code_instance_t *unspec)
             auto end = jl_hrtime();
             jl_atomic_fetch_add_relaxed(&jl_cumulative_compile_time, end - compiler_start_time);
         }
+        jl_compile_allocd_close(ct);
         ct->reentrant_timing &= ~1ull;
     }
 }
