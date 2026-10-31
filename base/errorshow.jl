@@ -255,6 +255,82 @@ function show_convert_error(io::IO, ex::MethodError, arg_types_param)
     end
 end
 
+is_keyword_slurp(name::Symbol) = endswith(String(name), "...")
+
+"""
+    nameable_keywords(f, argtypes = Tuple) -> Vector{Symbol}
+
+Every name a call to `f` may supply by keyword: the keyword arguments each method
+that may take `argtypes` declares, together with its positional parameters, which
+a call may also name. A slurped `kwargs...` is not a name and is excluded; see
+`accepts_any_keyword`, as are compiler-generated placeholders such as `#unused#`
+for an unnamed parameter.
+"""
+function nameable_keywords(@nospecialize(f), @nospecialize(argtypes::Type{<:Tuple}) = Tuple)
+    named = [name for m in methods(f, argtypes)
+             for name in vcat(kwarg_decl(m), nameable_parameters(m))
+             if !is_keyword_slurp(name) && !startswith(String(name), "#")]
+    return unique(named)
+end
+
+"""
+    accepts_any_keyword(f, argtypes = Tuple) -> Bool
+
+Whether some method of `f` that may take `argtypes` slurps keyword arguments (`kwargs...`).
+"""
+function accepts_any_keyword(@nospecialize(f), @nospecialize(argtypes::Type{<:Tuple}) = Tuple)
+    return any(is_keyword_slurp, name for m in methods(f, argtypes) for name in kwarg_decl(m))
+end
+
+"""
+    closest_name(given::Symbol, accepted::AbstractVector{Symbol})
+
+The name in `accepted` closest to `given`, or `nothing` when none resembles it
+closely enough to be worth offering. `given` itself is never the answer.
+"""
+function closest_name(given::Symbol, accepted::AbstractVector{Symbol})
+    needle = String(given)
+    best, best_score = nothing, 0.0
+    for name in accepted
+        candidate = String(name)
+        lena, lenb = length(needle), length(candidate)
+        # The distance is at least the length gap, so a wider gap cannot score 0.5.
+        if name === given || 2 * abs(lena - lenb) > max(lena, lenb)
+            continue
+        end
+        score = fuzzyscore(needle, candidate)
+        if score >= 0.5 && (best === nothing || score > best_score)
+            best, best_score = name, score
+        end
+    end
+    return best
+end
+
+"""
+    show_keyword_suggestions(io::IO, f, kwargs, argtypes = Tuple)
+
+Offer a correction for each given keyword name that no method of `f` taking
+positional arguments of `argtypes` accepts but that closely resembles a name one does.
+"""
+function show_keyword_suggestions(io::IO, @nospecialize(f), kwargs, @nospecialize(argtypes::Type{<:Tuple}) = Tuple)
+    # A method slurping keywords accepts every name, so nothing is misspelled.
+    if accepts_any_keyword(f, argtypes)
+        return nothing
+    end
+    accepted = nameable_keywords(f, argtypes)
+    for (given, _) in kwargs
+        if given in accepted
+            continue
+        end
+        suggestion = closest_name(given, accepted)
+        if suggestion !== nothing
+            print(io, "\nSuggestion: unsupported keyword argument `", given,
+                  "`; did you mean `", suggestion, "`?")
+        end
+    end
+    return nothing
+end
+
 function showerror(io::IO, ex::MethodError)
     @nospecialize io
     # ex.args is a tuple type if it was thrown from `invoke` and is
@@ -378,6 +454,10 @@ function showerror(io::IO, ex::MethodError)
         print(io, "\nThe type `$f` exists, but no method is defined for this combination of argument types when trying to construct it.")
     else
         print(io, "\nThe object of type `$(typeof(f))` exists, but no method is defined for this combination of argument types when trying to treat it as a callable object.")
+    end
+    if !isempty(kwargs)
+        # Positional arguments may stop short of a method's arity, since the rest can come by name.
+        show_keyword_suggestions(io, f, kwargs, Tuple{san_arg_types_param..., Vararg})
     end
     if !is_arg_types
         # Check for row vectors used where a column vector is intended.
@@ -1440,6 +1520,7 @@ function UndefVarError_hint(io::IO, ex::UndefVarError)
                     printed_too_new = true
                 else
                     print(io, "\nSuggestion: check for spelling errors or missing imports.")
+                    show_name_suggestion(io, var, scope)
                 end
             elseif kind === PARTITION_KIND_GLOBAL || kind === PARTITION_KIND_UNDEF_CONST || kind == PARTITION_KIND_DECLARED
                 print(io, "\nSuggestion: add an appropriate import or assignment. This global was declared but not assigned.")
@@ -1478,6 +1559,33 @@ function UndefVarError_hint(io::IO, ex::UndefVarError)
         end
 
         warned || _UndefVarError_warnfor(io, [Core, Main], var)
+    end
+    return nothing
+end
+
+"""
+    visible_names(scope::Module) -> Vector{Symbol}
+
+Every name code in `scope` can write unqualified: the module's own bindings,
+what each module it `using`s exports (`Base` included unless the module is a
+`baremodule`), and what `Core` exports. Compiler-generated names are left out,
+since no one can have meant to type one.
+"""
+function visible_names(scope::Module)
+    reachable = names(scope; all = true, imported = true, usings = true)
+    return unique(name for name in reachable if !startswith(String(name), "#"))
+end
+
+"""
+    show_name_suggestion(io::IO, var::Symbol, scope::Module)
+
+Offer the name reachable from `scope` that `var` most closely resembles, when one
+resembles it closely enough to be worth offering.
+"""
+function show_name_suggestion(io::IO, var::Symbol, scope::Module)
+    suggestion = closest_name(var, visible_names(scope))
+    if suggestion !== nothing
+        print(io, " Did you mean `", suggestion, "`?")
     end
     return nothing
 end
