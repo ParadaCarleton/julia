@@ -6695,8 +6695,10 @@ JL_DLLEXPORT const char *jl_reactive_image_fname(int32_t id) JL_NOTSAFEPOINT
 static int reactive_region_load(jl_image_buf_t buf)
 {
     reactive_sections_t sec;
-    if (!reactive_parse_blob((const char*)buf.data, buf.size, &sec))
+    if (!reactive_parse_blob((const char*)buf.data, buf.size, &sec)) {
+        jl_safe_printf("reactive: overlay: the blob of the image cannot be parsed; the image loads in place\n");
         return 0;
+    }
     const char *fname = NULL;
     size_t file_off = 0;
     if (!reactive_blob_file(buf.data, &fname, &file_off)) {
@@ -6795,6 +6797,8 @@ static void reactive_chain_load(jl_image_t *image)
     strcpy(chain_path + flen, ".chain");
     FILE *chain = fopen(chain_path, "r");
     if (chain == NULL) {
+        if (errno != ENOENT)
+            jl_errorf("reactive: the chain %s cannot be read: %s", chain_path, strerror(errno));
         free(chain_path);
         return;
     }
@@ -6958,7 +6962,7 @@ static int reactive_chain_exists(void) JL_NOTSAFEPOINT
     char *chain_path = (char*)malloc_s(flen + 8);
     memcpy(chain_path, image_file, flen);
     strcpy(chain_path + flen, ".chain");
-    int exists = access(chain_path, R_OK) == 0;
+    int exists = access(chain_path, F_OK) == 0;
     free(chain_path);
     return exists;
 }
@@ -6970,8 +6974,11 @@ JL_DLLEXPORT void jl_restore_system_image(jl_image_t *image, jl_image_buf_t buf)
     if (buf.kind == JL_IMAGE_KIND_NONE)
         return;
     reactive_chain_n = 0;
-    if (buf.kind == JL_IMAGE_KIND_SO && (reactive_overlay_mode() || reactive_chain_exists()) && reactive_region_load(buf))
+    int has_chain = reactive_chain_exists();
+    if (buf.kind == JL_IMAGE_KIND_SO && (reactive_overlay_mode() || has_chain) && reactive_region_load(buf))
         reactive_chain_load(image);
+    else if (has_chain) // the base alone would drop the edits of the overlays
+        jl_errorf("reactive: %s.chain names overlays, but the image cannot load through a region", jl_options.image_file);
 
     if (buf.kind == JL_IMAGE_KIND_SO) {
         assert(image->fptrs.ptrs); // jl_init_processor_sysimg should already be run
