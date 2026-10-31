@@ -1,5 +1,6 @@
 # Packages copied into stdlib/ by contrib/vendor_stdlibs.jl.
 # `ref = "release"` takes the highest vX.Y.Z tag, any other ref is a branch; `path` symlinks an in-tree package.
+# stdlib/vendored.lock.toml records the commit each ref resolved to.
 Revise = { repo = "https://github.com/timholy/Revise.jl", ref = "release" }
 JuliaInterpreter = { repo = "https://github.com/JuliaDebug/JuliaInterpreter.jl", ref = "release" }
 LoweredCodeUtils = { repo = "https://github.com/JuliaDebug/LoweredCodeUtils.jl", ref = "release" }
