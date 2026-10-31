@@ -1,0 +1,271 @@
+# Copy the packages listed in stdlib/vendored.toml into stdlib/ and register them in stdlib/Manifest.toml.
+# Usage: julia contrib/vendor_stdlibs.jl [--check]
+# `--check` clones nothing and fails if a generated file differs from what this script writes.
+using TOML
+using Pkg: Types, Versions
+
+const ROOT = dirname(@__DIR__)
+const STDLIB = joinpath(ROOT, "stdlib")
+
+"""The fields of a stdlib's Project.toml that vendoring reads."""
+struct Package
+    uuid::String
+    version::Union{Nothing, VersionNumber}
+    deps::Vector{String}
+    compat::Dict{String, String}
+end
+
+"""Parse `stdlib/<name>/Project.toml`."""
+function read_package(name::AbstractString)::Package
+    project = TOML.parsefile(joinpath(STDLIB, name, "Project.toml"))
+    version = haskey(project, "version") ? VersionNumber(project["version"]) : nothing
+    deps = sort!(String.(collect(keys(get(project, "deps", Dict{String, String}())))))
+    compat = Dict{String, String}(get(project, "compat", Dict{String, String}()))
+    return Package(project["uuid"], version, deps, compat)
+end
+
+"""An existing stdlib, from its stdlib/Manifest.toml entry."""
+function manifest_package(entries::AbstractVector)::Package
+    entry = only(entries)
+    version = haskey(entry, "version") ? VersionNumber(entry["version"]) : nothing
+    return Package(
+        entry["uuid"],
+        version,
+        String.(get(entry, "deps", String[])),
+        Dict{String, String}(),
+    )
+end
+
+"""Highest `vX.Y.Z` tag of `repo`."""
+function latest_release(repo::AbstractString)::String
+    tags = [
+        m[1]
+        for m in eachmatch(
+            r"refs/tags/(v\d+\.\d+\.\d+)$"m,
+            read(`git ls-remote --tags $repo`, String),
+        )
+    ]
+    if isempty(tags)
+        error("no release tags in $repo")
+    end
+    return "v" * string(maximum(VersionNumber, tags))
+end
+
+"""Replace `stdlib/<name>` with `ref` of `repo`, without its git metadata.
+Return its stdlib/vendored.lock.toml entry, which pins the cloned commit."""
+function vendor!(
+    name::AbstractString,
+    repo::AbstractString,
+    ref::AbstractString,
+)::Dict{String, String}
+    tag = ref == "release" ? latest_release(repo) : ref
+    dest = joinpath(STDLIB, name)
+    rm(dest; recursive = true, force = true)
+    run(`git clone -q --depth 1 --branch $tag $repo $dest`)
+    commit = readchomp(`git -C $dest rev-parse HEAD`)
+    for junk in (".git", ".github", "Manifest.toml")
+        rm(joinpath(dest, junk); recursive = true, force = true)
+    end
+    println("$name ← $repo@$tag ($commit)")
+    return Dict("repo" => repo, "ref" => tag, "commit" => commit)
+end
+
+"""Make `stdlib/<name>` a symlink to the in-tree package at `path`, relative to stdlib/."""
+function link!(name::AbstractString, path::AbstractString)::Nothing
+    dest = joinpath(STDLIB, name)
+    rm(dest; recursive = true, force = true)
+    symlink(path, dest)
+    println("$name → $path")
+    return nothing
+end
+
+"""Fail unless each vendored package's deps are stdlibs whose versions its [compat] admits."""
+function check(
+    vendored::AbstractVector{<:AbstractString},
+    packages::Dict{String, Package},
+)::Nothing
+    for name in vendored
+        package = packages[name]
+        for dep in package.deps
+            if !haskey(packages, dep)
+                error(
+                    "$name depends on $dep, which is not a stdlib; add it to stdlib/vendored.toml",
+                )
+            end
+        end
+        for (dep, spec) in package.compat
+            have = dep == "julia" ?
+                VERSION :
+                haskey(packages, dep) ? packages[dep].version : nothing
+            if have !== nothing && !(have in Versions.semver_spec(spec))
+                error("$name requires $dep $spec, but stdlib has $have")
+            end
+        end
+    end
+    return nothing
+end
+
+"""`table` as TOML text with sorted keys."""
+function sorted_toml(table::AbstractDict)::String
+    buffer = IOBuffer()
+    TOML.print(buffer, table; sorted = true)
+    return String(take!(buffer))
+end
+
+const MANIFEST_HEADER = "# This file is machine-generated - editing it directly is not advised\n\n"
+
+"""The `project_hash` Pkg records for `project`, so Pkg sees the manifest as current."""
+function project_hash(project::AbstractDict, manifest::AbstractDict)::String
+    dir = mktempdir()
+    write(joinpath(dir, "Project.toml"), sorted_toml(project))
+    write(joinpath(dir, "Manifest.toml"), MANIFEST_HEADER, sorted_toml(manifest))
+    return Types.workspace_resolve_hash(Types.EnvCache(joinpath(dir, "Project.toml")))
+end
+
+"""Write `parts` to `path`, or with `verify`, fail unless `path` already holds them."""
+function emit(path::AbstractString, parts::AbstractString...; verify::Bool)::Nothing
+    content = join(parts)
+    if !verify
+        write(path, content)
+    elseif read(path, String) != content
+        error("$path is stale; run `julia contrib/vendor_stdlibs.jl`")
+    end
+    return nothing
+end
+
+const VENDORED_LIST =joinpath(ROOT, "test", "vendored_stdlibs.toml")
+
+"""Packages vendored by the last run but no longer listed in stdlib/vendored.toml."""
+function dropped(vendored::AbstractVector{<:AbstractString})::Vector{String}
+    return setdiff(TOML.parsefile(VENDORED_LIST)["names"], vendored)
+end
+
+"""Add or replace the stdlib Project.toml and Manifest.toml entries of the vendored packages,
+and remove those of `dropped` packages."""
+function register!(
+    vendored::AbstractVector{<:AbstractString},
+    packages::Dict{String, Package},
+    dropped::AbstractVector{<:AbstractString},
+    verify::Bool,
+)::Nothing
+    project_path, manifest_path = joinpath(STDLIB, "Project.toml"),
+        joinpath(STDLIB, "Manifest.toml")
+    project, manifest = TOML.parsefile(project_path), TOML.parsefile(manifest_path)
+    for name in dropped
+        delete!(project["deps"], name)
+        delete!(manifest["deps"], name)
+    end
+    for name in vendored
+        package = packages[name]
+        project["deps"][name] = package.uuid
+        entry = Dict{String, Union{String, Vector{String}}}(
+            "uuid" => package.uuid,
+            "version" => string(package.version),
+        )
+        if !isempty(package.deps)
+            entry["deps"] = package.deps
+        end
+        manifest["deps"][name] = [entry]
+    end
+    manifest["project_hash"] = project_hash(project, manifest)
+    emit(
+        joinpath(STDLIB, "vendored.mk"),
+        "# Generated by contrib/vendor_stdlibs.jl from stdlib/vendored.toml\nVENDORED_STDLIBS := ",
+        join(vendored, ' '),
+        "\n";
+        verify,
+    )
+    emit(
+        joinpath(STDLIB, ".gitattributes"),
+        "# Generated by contrib/vendor_stdlibs.jl from stdlib/vendored.toml\n",
+        join((
+            "/$name linguist-vendored\n/$name/** linguist-vendored\n"
+            for name in vendored
+        ));
+        verify,
+    )
+    emit(
+        VENDORED_LIST,
+        "# Generated by contrib/vendor_stdlibs.jl from stdlib/vendored.toml\n",
+        sorted_toml(Dict("names" => vendored));
+        verify,
+    )
+    emit(project_path, sorted_toml(project); verify)
+    emit(manifest_path, MANIFEST_HEADER, sorted_toml(manifest); verify)
+    return nothing
+end
+
+"""Julia's own stdlibs: the names stdlib/stdlib.mk assigns before it adds the vendored ones."""
+function upstream_stdlibs()::Vector{String}
+    makefile = read(joinpath(STDLIB, "stdlib.mk"), String)
+    lists = eachmatch(r"^(?:STDLIBS_WITHIN_SYSIMG|INDEPENDENT_STDLIBS) :=((?:.*\\\n)*.*)$"m, makefile)
+    names = [String(name) for list in lists for name in split(list[1]) if name != "\\"]
+    if isempty(names)
+        error("found no stdlib names in stdlib/stdlib.mk")
+    end
+    return names
+end
+
+"""Fail if a vendored or dropped package shares a name with one of Julia's own stdlibs,
+whose stdlib Project.toml and Manifest.toml entries vendoring would replace or prune."""
+function check_names(names::AbstractVector{<:AbstractString})::Nothing
+    clashes = intersect(names, upstream_stdlibs())
+    if !isempty(clashes)
+        error("$clashes are Julia stdlibs; remove them from stdlib/vendored.toml and test/vendored_stdlibs.toml")
+    end
+    return nothing
+end
+
+"""Fail unless stdlib/vendored.lock.toml pins exactly the cloned packages of `sources`."""
+function check_lock(sources::AbstractDict)::Nothing
+    cloned = sort!([name for (name, source) in sources if !haskey(source, "path")])
+    locked = sort!(collect(keys(TOML.parsefile(joinpath(STDLIB, "vendored.lock.toml")))))
+    if cloned != locked
+        error("stdlib/vendored.lock.toml pins $locked, not $cloned; run `julia contrib/vendor_stdlibs.jl`")
+    end
+    return nothing
+end
+
+"""Vendor and register every package; with `--check`, only verify the generated files offline."""
+function main(args::AbstractVector{<:AbstractString})::Nothing
+    verify = args == ["--check"]
+    if !verify && !isempty(args)
+        error("usage: julia contrib/vendor_stdlibs.jl [--check]")
+    end
+    sources = TOML.parsefile(joinpath(STDLIB, "vendored.toml"))
+    vendored = sort!(collect(keys(sources)))
+    gone = dropped(vendored)
+    check_names(union(vendored, gone))
+    if verify
+        check_lock(sources)
+    else
+        for name in gone
+            rm(joinpath(STDLIB, name); recursive = true, force = true)
+            println("$name removed")
+        end
+        locks = Dict{String, Dict{String, String}}()
+        for (name, source) in sources
+            if haskey(source, "path")
+                link!(name, source["path"])
+            else
+                locks[name] = vendor!(name, source["repo"], source["ref"])
+            end
+        end
+        write(
+            joinpath(STDLIB, "vendored.lock.toml"),
+            "# Generated by contrib/vendor_stdlibs.jl from stdlib/vendored.toml: the commit each package was copied from\n",
+            sorted_toml(locks),
+        )
+    end
+    packages = Dict(
+        name => manifest_package(entries)
+        for (name, entries) in TOML.parsefile(joinpath(STDLIB, "Manifest.toml"))["deps"]
+        if !(name in gone)
+    )
+    merge!(packages, Dict(name => read_package(name) for name in vendored))
+    check(vendored, packages)
+    register!(vendored, packages, gone, verify)
+    return nothing
+end
+
+main(ARGS)
