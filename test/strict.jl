@@ -89,6 +89,17 @@ end
     @test !any(m -> m.module === Vendor, methods(+).ms)
 end
 
+@testset "a union inside an invariant parameter is owned when one member is" begin
+    # `AbstractVector{Union{Widget,Missing}}` names Widget; `AbstractVector{Missing}` is not a subtype.
+    Core.eval(Vendor, :(Base.show(io::IO, ::AbstractVector{Union{Widget,Missing}}, ::Bool) = nothing))
+    Core.eval(Vendor, :(Base.show(io::IO, ::Val{Union{Widget,Int}}, ::Bool) = nothing))
+    @test which(show, Tuple{IO, AbstractVector{Union{Vendor.Widget,Missing}}, Bool}).module === Vendor
+    @test which(show, Tuple{IO, Val{Union{Vendor.Widget,Int}}, Bool}).module === Vendor
+    # A typevar member can absorb Widget (`T = Any`), and a `Tuple` parameter is covariant.
+    @test_throws StrictModeError Core.eval(Vendor, :(Base.show(io::IO, ::AbstractVector{Union{T,Widget}}, ::Char) where {T} = nothing))
+    @test_throws StrictModeError Core.eval(Vendor, :(Base.show(io::IO, ::Tuple{Union{Widget,Int}}, ::Char) = nothing))
+end
+
 @testset "strict is opt-in and can be switched off" begin
     Core.eval(Lenient, :(Base.show(::IO, ::Int, ::Bool, ::Bool) = nothing))
     @test which(show, Tuple{IO, Int, Bool, Bool}).module === Lenient
