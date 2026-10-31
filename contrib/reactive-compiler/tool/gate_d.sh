@@ -263,6 +263,18 @@ mismatch() {
     echo "=== the overlays of image $N are refused over another base"
 }
 
+# A chain path that cannot be read (a directory) fails the startup loudly.
+unreadable() {
+    local dir=$OUT/image-unreadable
+    rm -rf "$dir"; mkdir -p "$dir/sys.so.chain"
+    ln "$JH/usr/lib/julia/sys.so" "$dir/sys.so"
+    if "$JH/usr/bin/julia" --startup-file=no -J "$dir/sys.so" -e 'exit(0)' > "$OUT/unreadable.log" 2>&1; then
+        echo "=== an unreadable chain starts the process"; return 1
+    fi
+    grep -q "reading the chain .* failed" "$OUT/unreadable.log" || { echo "=== the load fails for another reason:"; tail -3 "$OUT/unreadable.log"; return 1; }
+    echo "=== an unreadable chain is refused"
+}
+
 stop() {
     echo "=== quit: $(python3 "$TOOL/server_request.py" "$APP" quit)"
     restore
@@ -278,6 +290,7 @@ for step in $steps; do
         memory) memory ;;
         compact) compact ;;
         mismatch) mismatch ;;
+        unreadable) unreadable ;;
         start) start ;;
         stop) stop ;;
         *) echo "unknown step $step"; exit 2 ;;

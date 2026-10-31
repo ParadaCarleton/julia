@@ -6943,6 +6943,8 @@ static void reactive_chain_load(jl_image_t *image)
                            line, (size_t)h->npatch_sysimg, (size_t)h->npatch_const, (size_t)h->new_sysimg_size / 1024, nptrs);
         free(path);
     }
+    if (ferror(chain))
+        jl_errorf("reactive: reading the chain %s failed: %s", chain_path, strerror(errno));
     fclose(chain);
     free(chain_path);
     free(dir);
