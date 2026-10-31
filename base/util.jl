@@ -146,8 +146,15 @@ See also [`print`](@ref), [`println`](@ref), [`show`](@ref).
 """
 The `@path` given to `--code-coverage` or `--track-allocation`, made absolute and normalized.
 `JLOptions().tracked_path` holds its realpath, which misses files loaded through its symlinks.
+The runtime drops the given spelling when it names another directory; the realpath is returned then.
 """
-tracked_path_as_given() = unsafe_string(unsafe_load(cglobal(:jl_tracked_path_unresolved, Cstring)))
+function tracked_path_as_given()
+    given = unsafe_load(cglobal(:jl_tracked_path_unresolved, Cstring))
+    if given == C_NULL
+        return unsafe_string(JLOptions().tracked_path)
+    end
+    return unsafe_string(given)
+end
 
 """
     Base.julia_cmd(juliapath=joinpath(Sys.BINDIR, julia_exename()); cpu_target::Union{Nothing,String}=nothing)

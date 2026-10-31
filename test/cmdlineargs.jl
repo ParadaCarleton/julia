@@ -669,6 +669,13 @@ let exename = `$(Base.julia_cmd()) --startup-file=no --color=no`
                 # a child started with `julia_cmd` tracks the path as given, symlinks included
                 forwarded = readchomp(`$cov_exename --code-coverage=@$link -e 'print(Base.julia_cmd())'`)
                 @test occursin("--code-coverage=@$link", forwarded)
+                # a spelling the runtime dropped (`Deep/..`) forwards the tracked realpath
+                for option in ("--code-coverage", "--track-allocation")
+                    forwarded = cd(parent) do
+                        readchomp(`$cov_exename $option=@Deep/.. -e 'print(Base.julia_cmd())'`)
+                    end
+                    @test occursin("$option=@$(joinpath(parent, "outer"))", forwarded)
+                end
             end
         end
 
