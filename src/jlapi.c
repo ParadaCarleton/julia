@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <ctype.h>
 #include "julia.h"
 #include "options.h"
 #include "julia_assert.h"
@@ -1209,6 +1210,48 @@ static char *abspath(const char *in, int nprefix)
     return out;
 }
 
+static char *normpath(char *path)
+{ // lexically drop `.`, `..` and repeated separators of an absolute path in place, as `Base.normpath` does
+    const char sep = PATHSEPSTRING[0];
+    char *in = path, *out = path;
+#ifdef _OS_WINDOWS_
+    for (char *c = path; *c; c++)
+        if (*c == '/')
+            *c = sep;
+    if (isalpha((unsigned char)in[0]) && in[1] == ':') {
+        in += 2;
+        out += 2;
+    }
+    while (*in == sep) // keep both separators of a UNC root
+        *out++ = *in++;
+#else
+    if (*in == sep)
+        *out++ = sep;
+#endif
+    char *root = out;
+    while (*in) {
+        while (*in == sep)
+            in++;
+        const char *component = in;
+        while (*in && *in != sep)
+            in++;
+        size_t n = in - component;
+        if (n == 0 || (n == 1 && component[0] == '.'))
+            continue;
+        if (n == 2 && component[0] == '.' && component[1] == '.') {
+            while (out > root && *--out != sep)
+                ;
+            continue;
+        }
+        if (out > root)
+            *out++ = sep;
+        memmove(out, component, n);
+        out += n;
+    }
+    *out = '\0';
+    return path;
+}
+
 static char *absrealpath(const char *in, int nprefix)
 { // compute an absolute realpath location, so that chdir doesn't change the file reference
   // ignores (copies directly over) nprefix characters at the start of abspath
@@ -1301,7 +1344,7 @@ static void jl_resolve_sysimg_location(JL_IMAGE_SEARCH rel, const char* julia_bi
     if (jl_options.output_code_coverage)
         jl_options.output_code_coverage = absformat(jl_options.output_code_coverage);
     if (jl_options.tracked_path) {
-        jl_tracked_path_unresolved = abspath(jl_options.tracked_path, 0);
+        jl_tracked_path_unresolved = normpath(abspath(jl_options.tracked_path, 0));
         jl_options.tracked_path = absrealpath(jl_options.tracked_path, 0);
     }
 
