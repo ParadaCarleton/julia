@@ -78,6 +78,8 @@ function verdict(f, m::Method, tts, interp::PurityInterp)
         e = try
             Base.infer_effects(f, tt; interp)
         catch
+            # A failed inference proves nothing, so it cannot leave the verdict pure.
+            worst = 2
             continue
         end
         ef = e.effect_free
