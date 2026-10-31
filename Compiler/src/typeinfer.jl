@@ -1823,7 +1823,7 @@ function reactive_method_dead(mi::MethodInstance)
     def.is_for_opaque_closure && return false
     dead = get(reactive_dead_methods, def, nothing)
     if dead === nothing
-        dead = ccall(:jl_method_table_lookup_own, Any, (Any, Csize_t), def, get_world_counter()) !== def
+        dead = ccall(:jl_methtable_lookup, Any, (Any, Csize_t), def.sig, get_world_counter()) !== def
         reactive_dead_methods[def] = dead
     end
     return dead::Bool
