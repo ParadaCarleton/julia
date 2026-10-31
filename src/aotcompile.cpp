@@ -1129,9 +1129,8 @@ static GlobalVariable *emit_ptls_table(Module &M, Type *T_size, Type *T_ptr) {
 
 // See src/processor.h for documentation about this table. Corresponds to jl_image_header_t.
 static GlobalVariable *emit_image_header(Module &M, unsigned threads, unsigned nfvars, unsigned ngvars) {
-    constexpr uint32_t version = 1;
     std::array<uint32_t, 4> header{
-        version,
+        JL_IMAGE_FORMAT_VERSION,
         threads,
         nfvars,
         ngvars,
@@ -2397,7 +2396,46 @@ void jl_dump_native_impl(void *native_code,
                                                        GlobalVariable::InternalLinkage,
                                                        cpu_target_data, "jl_cpu_target_string");
 
-            AT = ArrayType::get(T_psize, 6);
+            // Thunks for the runtime entry points, one per slot; a pre-relocated image
+            // points at these instead of at libjulia-internal, which moves at every start.
+            auto T_thunk_int32 = Type::getInt32Ty(Context);
+            auto entry_slots_ty = ArrayType::get(T_ptr, JL_IMAGE_ENTRY_THUNKS);
+            auto entry_targets = new GlobalVariable(metadataM, entry_slots_ty, false,
+                                            GlobalVariable::ExternalLinkage,
+                                            Constant::getNullValue(entry_slots_ty),
+                                            "jl_image_entry_targets");
+            SmallVector<Constant*, JL_IMAGE_ENTRY_THUNKS> entry_thunk_ptrs;
+            for (size_t i = 0; i < JL_IMAGE_ENTRY_THUNKS; i++) {
+                // A calling convention is called with the code instance as its fourth
+                // argument; a builtin, and the opaque-closure target, take only three.
+                auto FT3 = FunctionType::get(T_ptr, {T_ptr, T_ptr, T_thunk_int32}, false);
+                auto FT4 = FunctionType::get(T_ptr, {T_ptr, T_ptr, T_thunk_int32, T_ptr}, false);
+                FunctionType *FT = i < JL_IMAGE_ENTRY_CONVENTIONS ? FT4 : FT3;
+                FunctionType *target_FT = i < JL_IMAGE_ENTRY_CONVENTIONS && i != JL_IMAGE_ENTRY_OC_CALL ? FT4 : FT3;
+                auto thunk = Function::Create(FT, GlobalValue::InternalLinkage,
+                                              "jl_image_entry_thunk_" + std::to_string(i), metadataM);
+                IRBuilder<> thunk_builder(BasicBlock::Create(Context, "top", thunk));
+                auto slot = thunk_builder.CreateConstInBoundsGEP2_32(entry_slots_ty, entry_targets, 0, i);
+                auto target = thunk_builder.CreateAlignedLoad(T_ptr, slot, Align(sizeof(void*)));
+                SmallVector<Value*, 4> thunk_args;
+                for (auto &argument : thunk->args())
+                    if (thunk_args.size() < target_FT->getNumParams())
+                        thunk_args.push_back(&argument);
+                auto forwarded = thunk_builder.CreateCall(target_FT, target, thunk_args);
+                // musttail needs matching prototypes; the dropping thunk makes a plain tail call.
+                forwarded->setTailCallKind(FT == target_FT ? CallInst::TCK_MustTail : CallInst::TCK_Tail);
+                thunk_builder.CreateRet(forwarded);
+                entry_thunk_ptrs.push_back(thunk);
+            }
+            auto entry_thunks_ty = ArrayType::get(T_ptr, JL_IMAGE_ENTRY_THUNKS);
+            auto entry_thunks = new GlobalVariable(metadataM, entry_thunks_ty, true,
+                                            GlobalVariable::ExternalLinkage,
+                                            ConstantArray::get(entry_thunks_ty, entry_thunk_ptrs),
+                                            "jl_image_entry_thunks");
+
+            static_assert(sizeof(jl_image_pointers_t) == 8 * sizeof(void*),
+                          "jl_image_pointers matches jl_image_pointers_t; bump JL_IMAGE_FORMAT_VERSION on change");
+            AT = ArrayType::get(T_psize, 8);
             auto pointers = new GlobalVariable(metadataM, AT, false,
                                             GlobalVariable::ExternalLinkage,
                                             ConstantArray::get(AT, {
@@ -2406,7 +2444,9 @@ void jl_dump_native_impl(void *native_code,
                                                     ConstantExpr::getBitCast(ptls, T_psize),
                                                     ConstantExpr::getBitCast(jl_small_typeof_copy, T_psize),
                                                     ConstantExpr::getBitCast(target_ids, T_psize),
-                                                    ConstantExpr::getBitCast(cpu_target_global, T_psize)
+                                                    ConstantExpr::getBitCast(cpu_target_global, T_psize),
+                                                    ConstantExpr::getBitCast(entry_thunks, T_psize),
+                                                    ConstantExpr::getBitCast(entry_targets, T_psize)
                                             }),
                                             "jl_image_pointers");
             addComdat(pointers, TheTriple);
