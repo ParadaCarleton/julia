@@ -1,4 +1,4 @@
-# Branches merged into master, in order: `branch [base]`. The base defaults to 1.13/fork/ci
+# Branches merged into main, in order: `branch [base]`. The base defaults to 1.13/fork/ci
 # and must appear above the branch. .github/assemble.sh keeps each branch on its base.
 1.13/fix/coverage-symlink
 1.13/lerpi-element-type
