@@ -8450,6 +8450,10 @@ using Test
 let m = @overlay mt function sin(x::Float64); 1; end
     @test isa(m, Method)
 end
+# the reactive compiler keeps the code of a method that lives in an external table
+let m = @overlay mt function sinh(x::Float64); 6; end
+    @test !Base.Compiler.reactive_method_dead(Base.Compiler.specialize_method(m, m.sig, Core.svec()))
+end
 # short function def
 @overlay mt cos(x::Float64) = 2
 # parametric function def
