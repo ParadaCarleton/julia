@@ -258,27 +258,28 @@ end
 is_keyword_slurp(name::Symbol) = endswith(String(name), "...")
 
 """
-    nameable_keywords(f) -> Vector{Symbol}
+    nameable_keywords(f, argtypes = Tuple) -> Vector{Symbol}
 
 Every name a call to `f` may supply by keyword: the keyword arguments each method
-declares, together with its positional parameters, which a call may also name.
-A slurped `kwargs...` is not a name and is excluded; see `accepts_any_keyword`, as are
-compiler-generated placeholders such as `#unused#` for an unnamed parameter.
+that may take `argtypes` declares, together with its positional parameters, which
+a call may also name. A slurped `kwargs...` is not a name and is excluded; see
+`accepts_any_keyword`, as are compiler-generated placeholders such as `#unused#`
+for an unnamed parameter.
 """
-function nameable_keywords(@nospecialize(f))
-    named = [name for m in methods(f)
+function nameable_keywords(@nospecialize(f), @nospecialize(argtypes::Type{<:Tuple}) = Tuple)
+    named = [name for m in methods(f, argtypes)
              for name in vcat(kwarg_decl(m), nameable_parameters(m))
              if !is_keyword_slurp(name) && !startswith(String(name), "#")]
     return unique(named)
 end
 
 """
-    accepts_any_keyword(f) -> Bool
+    accepts_any_keyword(f, argtypes = Tuple) -> Bool
 
-Whether some method of `f` slurps keyword arguments (`kwargs...`).
+Whether some method of `f` that may take `argtypes` slurps keyword arguments (`kwargs...`).
 """
-function accepts_any_keyword(@nospecialize(f))
-    return any(is_keyword_slurp, name for m in methods(f) for name in kwarg_decl(m))
+function accepts_any_keyword(@nospecialize(f), @nospecialize(argtypes::Type{<:Tuple}) = Tuple)
+    return any(is_keyword_slurp, name for m in methods(f, argtypes) for name in kwarg_decl(m))
 end
 
 """
@@ -288,26 +289,35 @@ The name in `accepted` closest to `given`, or `nothing` when none resembles it
 closely enough to be worth offering. `given` itself is never the answer.
 """
 function closest_name(given::Symbol, accepted::AbstractVector{Symbol})
-    score(name::Symbol) = fuzzyscore(String(given), String(name))
-    close = [name for name in accepted if name !== given && score(name) >= 0.5]
-    if isempty(close)
-        return nothing
+    needle = String(given)
+    best, best_score = nothing, 0.0
+    for name in accepted
+        candidate = String(name)
+        lena, lenb = length(needle), length(candidate)
+        # The distance is at least the length gap, so a wider gap cannot score 0.5.
+        if name === given || 2 * abs(lena - lenb) > max(lena, lenb)
+            continue
+        end
+        score = fuzzyscore(needle, candidate)
+        if score >= 0.5 && (best === nothing || score > best_score)
+            best, best_score = name, score
+        end
     end
-    return argmax(score, close)
+    return best
 end
 
 """
-    show_keyword_suggestions(io::IO, f, kwargs)
+    show_keyword_suggestions(io::IO, f, kwargs, argtypes = Tuple)
 
-Offer a correction for each given keyword name that no method of `f` accepts but
-that closely resembles a name some method does.
+Offer a correction for each given keyword name that no method of `f` taking
+positional arguments of `argtypes` accepts but that closely resembles a name one does.
 """
-function show_keyword_suggestions(io::IO, @nospecialize(f), kwargs)
+function show_keyword_suggestions(io::IO, @nospecialize(f), kwargs, @nospecialize(argtypes::Type{<:Tuple}) = Tuple)
     # A method slurping keywords accepts every name, so nothing is misspelled.
-    if accepts_any_keyword(f)
+    if accepts_any_keyword(f, argtypes)
         return nothing
     end
-    accepted = nameable_keywords(f)
+    accepted = nameable_keywords(f, argtypes)
     for (given, _) in kwargs
         if given in accepted
             continue
@@ -446,7 +456,8 @@ function showerror(io::IO, ex::MethodError)
         print(io, "\nThe object of type `$(typeof(f))` exists, but no method is defined for this combination of argument types when trying to treat it as a callable object.")
     end
     if !isempty(kwargs)
-        show_keyword_suggestions(io, f, kwargs)
+        # Positional arguments may stop short of a method's arity, since the rest can come by name.
+        show_keyword_suggestions(io, f, kwargs, Tuple{san_arg_types_param..., Vararg})
     end
     if !is_arg_types
         # Check for row vectors used where a column vector is intended.
