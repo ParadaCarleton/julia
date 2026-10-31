@@ -552,21 +552,41 @@ static int is_pathsep(char c) JL_NOTSAFEPOINT
 #endif
 }
 
+#ifdef _OS_WINDOWS_
+// whether `path` is `prefix` or lies below it, ignoring case as NTFS does (ordinal, on UTF-16)
+static int path_has_prefix(const char *path, size_t len, const char *prefix) JL_NOTSAFEPOINT
+{
+    if (prefix == NULL)
+        return 0;
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, path, (int)len, NULL, 0);
+    int wprefix_len = MultiByteToWideChar(CP_UTF8, 0, prefix, -1, NULL, 0) - 1;
+    if (wlen < wprefix_len)
+        return 0;
+    wchar_t *wpath = (wchar_t*)malloc_s((wlen + 1) * sizeof(wchar_t));
+    wchar_t *wprefix = (wchar_t*)malloc_s((wprefix_len + 1) * sizeof(wchar_t));
+    MultiByteToWideChar(CP_UTF8, 0, path, (int)len, wpath, wlen);
+    MultiByteToWideChar(CP_UTF8, 0, prefix, -1, wprefix, wprefix_len + 1);
+    int same = CompareStringOrdinal(wpath, wprefix_len, wprefix, wprefix_len, TRUE) == CSTR_EQUAL &&
+               (wlen == wprefix_len || wprefix_len == 0 || wprefix[wprefix_len - 1] == L'\\' ||
+                wprefix[wprefix_len - 1] == L'/' || wpath[wprefix_len] == L'\\' || wpath[wprefix_len] == L'/');
+    free(wpath);
+    free(wprefix);
+    return same;
+}
+#else
 // whether `path` is `prefix` or lies below it; `/a/b` does not hold `/a/bc`
 static int path_has_prefix(const char *path, size_t len, const char *prefix) JL_NOTSAFEPOINT
 {
     if (prefix == NULL)
         return 0;
     size_t prefix_len = strlen(prefix);
-#ifdef _OS_WINDOWS_
-    int same = len >= prefix_len && _strnicmp(path, prefix, prefix_len) == 0; // Windows paths ignore case
-#else
-    int same = len >= prefix_len && strncmp(path, prefix, prefix_len) == 0;
-#endif
-    return same &&
+    return len >= prefix_len && strncmp(path, prefix, prefix_len) == 0 &&
            (len == prefix_len || prefix_len == 0 || is_pathsep(prefix[prefix_len - 1]) || is_pathsep(path[prefix_len]));
 }
+#endif
 
+// Paths are compared as loaded, never resolved: a file reached through a symlink pointing
+// into the tracked realpath is missed, since resolving would cost a filesystem call per method.
 JL_DLLEXPORT int jl_path_is_tracked(const char *path, size_t len) JL_NOTSAFEPOINT
 {
     return path_has_prefix(path, len, jl_options.tracked_path) ||
