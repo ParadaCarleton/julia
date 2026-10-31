@@ -1678,6 +1678,17 @@ end
     # `include_string` names a file relative to nothing, which Base's own do not share
     @test Base._is_julia_source("./array.jl")
     @test !Base._is_julia_source("user_code.jl")
+    # and may even reuse a Base file name, which the frame's module then tells apart
+    reused = Module()
+    include_string(reused, "@noinline g() = error(\"g\")", "array.jl")
+    frames = try
+        Base.invokelatest(reused.g)
+    catch
+        stacktrace(catch_backtrace())
+    end
+    user = frames[findfirst(frame -> frame.func === :g, frames)]
+    @test Base._is_julia_source(string(user.file)) && !Base._is_julia_source(user)
+    @test Base._is_julia_source(frames[findfirst(frame -> frame.func === :error, frames)])
     # Julia's test suite and a depot living beside its sources are not Julia's own code
     sharedir = abspath(Sys.BINDIR, Base.DATAROOTDIR, "julia")
     @test !Base._is_julia_source(joinpath(sharedir, "test", "errorshow.jl"))
