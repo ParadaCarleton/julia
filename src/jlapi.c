@@ -1200,11 +1200,19 @@ static char *abspath(const char *in, int nprefix)
         if (uv_cwd(path, &path_size)) {
             jl_error("fatal error: unexpected error while retrieving current working directory");
         }
+        const char *rel = in + nprefix;
+#ifdef _OS_WINDOWS_
+        // `C:rel` is relative to the working directory when that is on drive `C:`
+        if (rel[0] && rel[1] == ':' && path[1] == ':' && toupper((unsigned char)rel[0]) == toupper((unsigned char)path[0])) {
+            rel += 2;
+            sz -= 2;
+        }
+#endif
         out = (char*)malloc_s(path_size + 1 + sz + nprefix);
         memcpy(out, in, nprefix);
         memcpy(out + nprefix, path, path_size);
         out[nprefix + path_size] = PATHSEPSTRING[0];
-        memcpy(out + nprefix + path_size + 1, in + nprefix, sz);
+        memcpy(out + nprefix + path_size + 1, rel, sz);
         free(path);
     }
     return out;
@@ -1218,12 +1226,19 @@ static char *normpath(char *path)
     for (char *c = path; *c; c++)
         if (*c == '/')
             *c = sep;
-    if (isalpha((unsigned char)in[0]) && in[1] == ':') {
-        in += 2;
-        out += 2;
+    if (in[0] == sep && in[1] == sep) { // keep a UNC root `\\server\share` whole
+        int seps = 0;
+        while (*in && (*in != sep || ++seps < 4))
+            *out++ = *in++;
     }
-    while (*in == sep) // keep both separators of a UNC root
-        *out++ = *in++;
+    else {
+        if (isalpha((unsigned char)in[0]) && in[1] == ':') {
+            in += 2;
+            out += 2;
+        }
+        if (*in == sep)
+            *out++ = sep;
+    }
 #else
     if (*in == sep)
         *out++ = sep;
@@ -1243,7 +1258,7 @@ static char *normpath(char *path)
                 ;
             continue;
         }
-        if (out > root)
+        if (out > path && out[-1] != sep)
             *out++ = sep;
         memmove(out, component, n);
         out += n;
