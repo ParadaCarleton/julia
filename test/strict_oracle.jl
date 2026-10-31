@@ -20,7 +20,7 @@ const VALS = (1, :x, Widget(), Cog())
 "Concrete types that name only foreign types, so they witness piracy."
 const UNIVERSE = DataType[Int, Float64, Bool, String, Symbol, Nothing,
     map(L -> Vector{L}, FOREIGN_LEAVES)..., map(L -> Type{L}, FOREIGN_LEAVES)...,
-    Vector{Union{Int,String}}, Vector{Vector{Int}}, Tuple{}, Tuple{Int}, Tuple{Int,String},
+    Vector{Union{}}, Type{Union{}}, Vector{Union{Int,String}},Vector{Vector{Int}}, Tuple{}, Tuple{Int}, Tuple{Int,String},
     Val{1}, Val{:x}]
 
 "The callee of every generated signature; foreign to `StrictOracle`."
