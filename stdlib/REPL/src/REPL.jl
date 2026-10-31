@@ -619,7 +619,10 @@ function __repl_entry_display_error(errio::IO, @nospecialize errval)
         println(errio)
     end
     if hiddenflag[]
-        print(errio, "Some frames were hidden. Use `show(err)` to see the complete trace.")
+        # the environment variable abbreviates `show(err)` as well
+        forced = Base.get_bool_env("JULIA_STACKTRACE_ABBREVIATED", false) === true
+        print(errio, "Some frames were hidden. ", forced ? "Unset `JULIA_STACKTRACE_ABBREVIATED`" :
+              "Use `show(err)`", " to see the complete trace.")
         println(errio)
     end
     return nothing

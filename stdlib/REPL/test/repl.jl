@@ -1754,6 +1754,24 @@ fake_repl() do stdin_write, stdout_read, repl
     @test contains(txt, "Some type information was truncated. Use `show(err)` to see complete types.")
 end
 
+@testset "the hidden-frame hint names what shows the complete trace" begin
+    m = Module()
+    include_string(m, "@noinline f(x) = sum([1]; dims = x)", "/user/code.jl")
+    err = try
+        Base.invokelatest(m.f, "x")
+    catch
+        current_exceptions()
+    end
+    hint(setting) = withenv("JULIA_STACKTRACE_ABBREVIATED" => setting) do
+        io = IOBuffer()
+        REPL.__repl_entry_display_error(io, err)
+        String(take!(io))
+    end
+    @test contains(hint(nothing), "Some frames were hidden. Use `show(err)` to see the complete trace.")
+    # the variable abbreviates `show(err)` too, so only unsetting it reveals the trace
+    @test contains(hint("true"), "Some frames were hidden. Unset `JULIA_STACKTRACE_ABBREVIATED` to see the complete trace.")
+end
+
 # Hints for tab completes
 
 fake_repl() do stdin_write, stdout_read, repl
