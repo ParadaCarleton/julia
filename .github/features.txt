@@ -1,7 +1,6 @@
-# Branches merged into main, in order: `branch [base]`. The base defaults to 1.13/fork/ci
-# and must appear above the branch. .github/assemble.sh keeps each branch on its base.
+# Branches merged into main, in order: `branch [base]`. The base column is informational;
+# .github/assemble-jj.sh reads only the branch names; stacking lives in history.
 1.13/fix/coverage-symlink
-1.13/lerpi-element-type
 1.13/feature/abbreviated-traces
 # its test/errorshow.jl changes sit on top of the abbreviated-traces ones
 1.13/feature/kwargs-by-name 1.13/feature/abbreviated-traces
