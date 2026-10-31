@@ -38,7 +38,7 @@ jobs:
             old=$(git rev-parse HEAD)
             if [ "$base" != "$latest" ]; then git rebase --onto "$latest" "$base"; fi
             julia --startup-file=no contrib/vendor_stdlibs.jl
-            git add -A stdlib
+            git add -A stdlib test/vendored_stdlibs.toml
             if ! git diff --cached --quiet; then git commit -m "stdlib: update vendored packages"; fi
             new=$(git rev-parse HEAD)
             if [ "$new" = "$old" ]; then exit 0; fi
