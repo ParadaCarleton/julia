@@ -14,8 +14,8 @@ function showerror(io::IO, e::StrictModeError)
     print(io, "StrictModeError: type piracy in strict module ", e.mod, "\n  ")
     show(io, e.sig)
     print(io, "\nowns none of: ")
-    home = _root_module(e.mod)
-    join(io, unique(m for m in _type_owners!(Module[], e.sig) if _root_module(m) !== home), ", ")
+    home = _owner(e.mod)
+    join(io, unique(m for m in _type_owners!(Module[], e.sig) if _owner(m) !== home), ", ")
     print(io, "\nDefine this method in a module that owns the function or one of the ",
               "argument types, or drop `strict=true`.")
 end
@@ -33,6 +33,25 @@ function _root_module(m::Module)
         p = parentmodule(m)
     end
     return m
+end
+
+"""
+    _owner(m::Module) -> Module
+
+Package that owns `m`: its top-level module, or the parent package when that module
+is a package extension, so `FooExt` may extend functions for `Foo`'s types.
+"""
+function _owner(m::Module)
+    root = _root_module(m)
+    uuid = ccall(:jl_module_uuid, NTuple{2, UInt64}, (Any,), root)
+    if uuid === (UInt64(0), UInt64(0))
+        return root  # not a package, so not an extension
+    end
+    parent = @lock require_lock begin
+        ids = get(EXT_PRIMED, PkgId(root), nothing)
+        ids === nothing ? nothing : get(loaded_modules, ids[1], nothing)
+    end
+    return parent === nothing ? root : parent
 end
 
 """
@@ -78,7 +97,7 @@ suffices there. A `TypeVar` ranges over its bound, so it is never exact.
 """
 function _is_owned(home::Module, @nospecialize(T), exact::Bool=false)
     if T isa DataType
-        if _root_module(T.name.module) === home
+        if _owner(T.name.module) === home
             return true
         end
         inner = exact || T.name !== Tuple.name
@@ -117,7 +136,7 @@ types the module's package does not own. `sig` includes the callee at position 1
 so a module always owns methods of its own functions.
 """
 function _is_piracy(mod::Module, @nospecialize(sig))
-    home = _root_module(mod)
+    home = _owner(mod)
     for p in (unwrap_unionall(sig)::DataType).parameters
         if _is_owned(home, p)
             return false

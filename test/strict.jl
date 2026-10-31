@@ -100,6 +100,30 @@ end
     @test_throws StrictModeError Core.eval(Vendor, :(Base.show(io::IO, ::Tuple{Union{Widget,Int}}, ::Char) = nothing))
 end
 
+@testset "a package extension owns its parent package's types" begin
+    parent, ext = Module(:StrictParent), Module(:StrictParentExt)
+    ccall(:jl_set_module_uuid, Cvoid, (Any, NTuple{2, UInt64}), parent, (0x5d1c, 0x01))
+    ccall(:jl_set_module_uuid, Cvoid, (Any, NTuple{2, UInt64}), ext, (0x5d1c, 0x02))
+    ccall(:jl_set_module_strict, Cvoid, (Any, Cint), ext, 1)
+    Core.eval(parent, :(struct Widget end))
+    parent_id, ext_id = Base.PkgId(parent), Base.PkgId(ext)
+    @lock Base.require_lock begin
+        Base.EXT_PRIMED[ext_id] = [parent_id]
+        Base.loaded_modules[parent_id] = parent
+    end
+    try
+        @test Base._owner(ext) === parent
+        Core.eval(ext, :(Base.show(io::IO, ::$(parent.Widget)) = nothing))
+        @test which(show, Tuple{IO, parent.Widget}).module === ext
+        @test_throws StrictModeError Core.eval(ext, :(Base.show(io::IO, ::Signed, ::AbstractChar, ::Bool) = nothing))
+    finally
+        @lock Base.require_lock begin
+            delete!(Base.EXT_PRIMED, ext_id)
+            delete!(Base.loaded_modules, parent_id)
+        end
+    end
+end
+
 @testset "strict is opt-in and can be switched off" begin
     Core.eval(Lenient, :(Base.show(::IO, ::Int, ::Bool, ::Bool) = nothing))
     @test which(show, Tuple{IO, Int, Bool, Bool}).module === Lenient
