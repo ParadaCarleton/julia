@@ -413,7 +413,24 @@ module ByName
     ambiguous(y::Beta, x::Alpha) = :second
     slurp(x, rest...) = (x, rest)
     renamed(a, b) = (:first, a, b)
+    worldly(a, b) = (:first, a, b)
+    later(x) = x
+    widened(x::Number, y::Number) = (:general, x, y)
+    widened(y::Integer, x::Integer) = (:specific, y, x)
+    unnamed(::Integer, y) = y
     Core.kwcall(kwargs, ::Alpha, x::Integer) = (kwargs, x)
+end
+
+"Redefine `ByName.worldly` with swapped names, then resolve a by-name call in the older world."
+function rename_then_call()
+    @eval ByName worldly(b, a) = (:second, b, a)
+    return Base.kwcall_by_name((a = 1, b = 2), ByName.worldly, ())
+end
+
+"Give `ByName.later` a two-argument method, then ask in the older world whether a by-name call applies."
+function define_then_ask()
+    @eval ByName later(a, b) = (a, b)
+    return Base.by_name_applicable((a = 1, b = 2), ByName.later, ())
 end
 
 @testset "positional arguments passed by name" begin
@@ -458,4 +475,16 @@ end
     @test ByName.renamed(a = 1, b = 2) === (:first, 1, 2)
     @eval ByName renamed(b, a) = (:second, b, a)
     @test ByName.renamed(a = 1, b = 2) === (:second, 2, 1)
+
+    # resolution reads the caller's world; methods defined after the call began are invisible
+    @test rename_then_call() === (:first, 1, 2)
+    @test !define_then_ask()
+
+    # inference resolves on declared field types only when run time would agree
+    widekw = NamedTuple{(:x, :y), Tuple{Number, Number}}((1, 2))
+    @test_throws ArgumentError ByName.widened(; widekw...)
+
+    # an unnamed parameter has no name to pass it by
+    @test ByName.unnamed(1; y = 2) === 2
+    @test_throws MethodError ByName.unnamed(; NamedTuple{(Symbol("#unused#"), :y)}((1, 2))...)
 end
