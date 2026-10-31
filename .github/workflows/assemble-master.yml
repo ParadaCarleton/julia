@@ -1,0 +1,23 @@
+name: Assemble master from feature branches
+on:
+  schedule: [{ cron: "0 6 * * *" }]
+  workflow_dispatch:
+  push: { branches-ignore: [master] }
+permissions:
+  contents: write
+  pull-requests: read
+concurrency: assemble-master
+jobs:
+  assemble:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: 1.13/fork/ci, fetch-depth: 0, token: "${{ secrets.REBASE_TOKEN }}" }
+      - name: Rebase the CI branch, the listed branches and open pull requests; rebuild master
+        env:
+          GH_TOKEN: "${{ secrets.REBASE_TOKEN }}"
+        run: |
+          git config user.name github-actions && git config user.email github-actions@users.noreply.github.com
+          # The script checks out other commits, so run a copy of it.
+          cp .github/assemble.sh "$RUNNER_TEMP/assemble.sh"
+          bash "$RUNNER_TEMP/assemble.sh"
