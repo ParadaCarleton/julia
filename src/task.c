@@ -692,6 +692,9 @@ JL_DLLEXPORT void jl_switch(void) JL_NOTSAFEPOINT_LEAVE JL_NOTSAFEPOINT_ENTER
     ptls->finalizers_inhibited = 0;
 
     jl_timing_block_t *blk = jl_timing_block_task_exit(ct, ptls);
+    int compiling = ct->reentrant_timing & 1;
+    if (compiling)
+        jl_compile_allocd_close(ct);
     ctx_switch(ct);
 
 #ifdef MIGRATE_TASKS
@@ -712,6 +715,8 @@ JL_DLLEXPORT void jl_switch(void) JL_NOTSAFEPOINT_LEAVE JL_NOTSAFEPOINT_ENTER
            0 == ptls->finalizers_inhibited);
     ptls->finalizers_inhibited = finalizers_inhibited;
     jl_timing_block_task_enter(ct, ptls, blk); (void)blk;
+    if (compiling)
+        jl_compile_allocd_open(ct);
 
     sig_atomic_t other_defer_signal = ptls->defer_signal;
     ptls->defer_signal = defer_signal;
