@@ -1526,9 +1526,12 @@ end
         end
         return false
     end
+    # The build interns a symbol that no object references; the image keeps it.
+    build = """Symbol("built_" * "unreferenced")"""
+    in_image = """ccall(:jl_object_in_image, UInt8, (Any,), Symbol("built_" * "unreferenced")) == 1"""
     mktempdir() do dir
         for (name, prelink) in (("plain", "no"), ("room", "yes"))
-            @test "" == test_read_success(`$exename --sysimage-prelink=$prelink -t1,0 --output-o $(dir)/$(name).o.a -e 0`)
+            @test "" == test_read_success(`$exename --sysimage-prelink=$prelink -t1,0 --output-o $(dir)/$(name).o.a -e $build`)
         end
         if isfile(joinpath(dir, "plain.o.a")) && isfile(joinpath(dir, "room.o.a"))
             @test filesize(joinpath(dir, "room.o.a")) > filesize(joinpath(dir, "plain.o.a"))
@@ -1537,6 +1540,7 @@ end
             for name in ("plain", "room")
                 Base.Linking.link_image(joinpath(dir, "$name.o.a"), joinpath(dir, "$name.so"))
                 @test readchomp(`$exename -t1,0 -J $(dir)/$(name).so -E "1 + 1"`) == "2"
+                @test readchomp(`$exename -t1,0 -J $(dir)/$(name).so -E $in_image`) == "true"
             end
         end
     end
