@@ -2,7 +2,10 @@
 
 using InteractiveUtils: @activate
 
-if Base.identify_package("Compiler") !== nothing && !isdefined(Main, :__custom_compiler_active)
+# The stdlib Compiler serves packages that depend on it; tests activate only a project's own Compiler.
+if let pkg = Base.identify_package("Compiler")
+        pkg !== nothing && !startswith(Base.locate_package(pkg), Sys.STDLIB)
+    end && !isdefined(Main, :__custom_compiler_active)
     Base.eval(Main, :(__custom_compiler_active=true))
     @activate Compiler
 end

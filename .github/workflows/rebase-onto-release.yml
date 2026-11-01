@@ -13,7 +13,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { ref: master, fetch-depth: 0, token: "${{ secrets.REBASE_TOKEN }}" }
-      - name: Rebase master onto newest stable tag, then its open pull requests onto master
+      - if: ${{ github.event_name != 'push' }}
+        uses: julia-actions/setup-julia@v2
+      - name: Rebase master onto newest stable tag and vendor the stdlibs, then rebase its open pull requests onto master
         env:
           BRANCH: master
           GH_TOKEN: "${{ secrets.REBASE_TOKEN }}"
@@ -33,10 +35,13 @@ jobs:
             latest=$(git tag -l 'v*' | grep -xE 'v[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -1)
             base=$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' --exclude '*-*' HEAD)
             echo "base=$base latest=$latest"
-            if [ "$base" = "$latest" ]; then exit 0; fi
             old=$(git rev-parse HEAD)
-            git rebase --onto "$latest" "$base"
+            if [ "$base" != "$latest" ]; then git rebase --onto "$latest" "$base"; fi
+            julia --startup-file=no contrib/vendor_stdlibs.jl
+            git add -A stdlib test/vendored_stdlibs.toml
+            if ! git diff --cached --quiet; then git commit -m "stdlib: update vendored packages"; fi
             new=$(git rev-parse HEAD)
+            if [ "$new" = "$old" ]; then exit 0; fi
             git push --force-with-lease="$BRANCH:$old" origin "HEAD:$BRANCH"
           fi
           # Each pull request keeps only its own commits, the ones after the old master tip.
