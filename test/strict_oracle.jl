@@ -11,14 +11,15 @@ module StrictOracle
 abstract type AbstractWidget end
 struct Widget end
 struct Cog <: AbstractWidget end
+abstract type Meter <: Number end  # owned subtype of a foreign abstract type
 
 # Simpler options come first, so a shrinker that lowers choices simplifies the type.
-const FOREIGN_LEAVES = (Int, Integer, Real, Any, String, Symbol, Nothing)
-const LEAVES = (FOREIGN_LEAVES..., Widget, AbstractWidget, Cog)
+const FOREIGN_LEAVES = (Int, Integer, Real, Number, Any, String, Symbol, Nothing)
+const LEAVES = (FOREIGN_LEAVES..., Widget, AbstractWidget, Cog, Meter)
 const VALS = (1, :x, Widget(), Cog())
 
 "Concrete types that name only foreign types, so they witness piracy."
-const UNIVERSE = DataType[Any, Int,Float64, Bool, String, Symbol, Nothing,
+const UNIVERSE = DataType[Any, Number, Int,Float64, Bool, String, Symbol, Nothing,
     map(L -> Vector{L}, FOREIGN_LEAVES)..., map(L -> Type{L}, FOREIGN_LEAVES)...,
     Vector{Union{}}, Type{Union{}}, Vector{Union{Int,String}},Vector{Vector{Int}}, Tuple{}, Tuple{Int}, Tuple{Int,String},
     Val{1}, Val{:x}]

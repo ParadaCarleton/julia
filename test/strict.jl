@@ -11,6 +11,8 @@ Base.Experimental.@compiler_options strict=true
 
 struct Widget end
 struct Gadget{T} end
+abstract type Counter <: Number end
+abstract type Other end
 abstract type Shape end
 
 frob(x) = x
@@ -93,6 +95,11 @@ end
     @test_throws StrictModeError Core.eval(Vendor, :(Base.show(io::IO, ::Type{T}, ::Bool) where {T>:Widget} = nothing))  # (IO, Type{Any}, Bool)
     @test_throws StrictModeError Core.eval(Vendor, :(Base.show(io::IO, ::Vector{Vector{T}}, ::Bool) where {T>:Widget} = nothing))
     @test_throws StrictModeError Core.eval(Vendor, :(Base.show(io::IO, ::Tuple{Type{T}}, ::Bool) where {T>:Widget} = nothing))
+    # `Counter<:T<:Union{Number,Other}` admits `T = Number`, which names no owned type.
+    inner = :(Vector{T})
+    @test_throws StrictModeError Core.eval(Vendor, :(Base.:+(::Vector{T}, ::Bool) where {Counter<:T<:Union{Number,Other}} = nothing))
+    @test_throws StrictModeError Core.eval(Vendor, :(Base.:+(::Type{T}, ::Bool) where {Counter<:T<:Union{Number,Other}} = nothing))
+    @test_throws StrictModeError Core.eval(Vendor, :(Base.:+(::Vector{$inner}, ::Bool) where {Counter<:T<:Union{Number,Other}} = nothing))
     @test owned_shows() == before
     @test_throws StrictModeError Core.eval(Vendor, :((::Union{typeof(+),typeof(frob)})(a::Int, b::Int) = 0))
     @test !any(m -> m.module === Vendor, methods(+).ms)
@@ -184,5 +191,9 @@ end
     piratical = filter(sig -> StrictOracle.foreign_witness(sig) !== nothing, sigs)
     @test length(piratical) > 100
     @test isempty(filter(sig -> !Base._is_piracy(StrictOracle, sig), piratical))
+    # Pinned owned bounds are accepted; the same bounds widened to a foreign intermediate are not.
+    meter, cog = StrictOracle.Meter, StrictOracle.Cog
+    @test !Base._is_piracy(StrictOracle, Tuple{StrictOracle.F, Vector{T}} where StrictOracle.Widget<:T<:StrictOracle.Widget)
+    @test Base._is_piracy(StrictOracle, Tuple{StrictOracle.F, Vector{T}} where meter<:T<:Union{Number,cog})
     # measured: the rule also rejects ~25% of signatures with no witness, mostly because UNIVERSE is finite.
 end

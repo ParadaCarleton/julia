@@ -93,8 +93,10 @@ fixed and positive, since `Vararg{T}` also matches zero arguments.
 
 `exact` marks an invariant parameter (anything below a non-`Tuple` type's parameter):
 a matching value's type contains that parameter verbatim, so mentioning one owned type
-suffices there. An invariant `TypeVar` counts only when both bounds are owned and the
-lower bound is not `Union{}`, so every type between the bounds is owned.
+suffices there. An invariant `TypeVar` counts only when its bounds are pinned
+(`lb === ub`, as in `Widget<:T<:Widget`) to an owned type. Checking the endpoints of a wider
+interval is unsound: the types between them need not be owned. With `Widget<:Number`,
+`Widget<:T<:Union{Number,Other}` admits `T = Number`, which mentions no owned type.
 """
 function _is_owned(home::Module, @nospecialize(T), exact::Bool=false)
     if T isa DataType
@@ -117,9 +119,9 @@ function _is_owned(home::Module, @nospecialize(T), exact::Bool=false)
         end
         return _is_owned(home, T.a) && _is_owned(home, T.b)
     elseif T isa TypeVar
-        # An invariant typevar takes any type between its bounds, so both must be owned and nonempty.
+        # An invariant typevar takes any type between its bounds; only a pinned one is known.
         if exact
-            return T.lb !== Union{} && _is_owned(home, T.lb, true) && _is_owned(home, T.ub, true)
+            return T.lb === T.ub && _is_owned(home, T.ub, true)
         end
         return _is_owned(home, T.ub)
     elseif T isa Core.TypeofVararg
