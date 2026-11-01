@@ -11,6 +11,9 @@ INDEPENDENT_STDLIBS := \
 	LibCURL_jll LibSSH2_jll LibGit2_jll nghttp2_jll  MozillaCACerts_jll \
 	MPFR_jll OpenLibm_jll OpenSSL_jll PCRE2_jll p7zip_jll Zlib_jll Zstd_jll
 
+include $(JULIAHOME)/stdlib/vendored.mk
+INDEPENDENT_STDLIBS += $(VENDORED_STDLIBS)
+
 STDLIBS := $(STDLIBS_WITHIN_SYSIMG) $(INDEPENDENT_STDLIBS)
 VERSDIR := v$(shell cut -d. -f1-2 < $(JULIAHOME)/VERSION)
 

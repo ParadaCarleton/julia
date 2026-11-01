@@ -115,6 +115,7 @@ using .StackTraces
 include("show.jl")
 include("arrayshow.jl")
 include("methodshow.jl")
+include("kwbyname.jl")
 
 # multidimensional arrays
 include("multidimensional.jl")
