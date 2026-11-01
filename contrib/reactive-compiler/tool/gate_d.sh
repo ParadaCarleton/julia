@@ -21,6 +21,8 @@
 #              image against the first founding's, and its run
 #   mismatch - the overlays of image N over the founding after the edits:
 #              the load refuses them by the checksum of their base
+#   unreadable  - a directory at the chain path fails the startup loudly
+#   probe_error - a looping symlink at the chain path fails the startup loudly
 #   stop     - the server quits, the file is restored
 # Pass step names to run some steps, or nothing to run all of them in order.
 set -u
@@ -275,12 +277,25 @@ unreadable() {
     echo "=== an unreadable chain is refused"
 }
 
+# A looping symlink at the chain path (ELOOP) fails the startup loudly.
+probe_error() {
+    local dir=$OUT/image-probe-error
+    rm -rf "$dir"; mkdir -p "$dir"
+    ln "$JH/usr/lib/julia/sys.so" "$dir/sys.so"
+    ln -s sys.so.chain "$dir/sys.so.chain"
+    if "$JH/usr/bin/julia" --startup-file=no -J "$dir/sys.so" -e 'exit(0)' > "$OUT/probe-error.log" 2>&1; then
+        echo "=== a chain path that cannot be probed starts the process"; return 1
+    fi
+    grep -q "cannot probe .*sys.so.chain" "$OUT/probe-error.log" || { echo "=== the load fails for another reason:"; tail -3 "$OUT/probe-error.log"; return 1; }
+    echo "=== a chain path that cannot be probed is refused"
+}
+
 stop() {
     echo "=== quit: $(python3 "$TOOL/server_request.py" "$APP" quit)"
     restore
 }
 
-steps=${*:-full edits restart oracle memory start compact mismatch stop}
+steps=${*:-full edits restart oracle memory start compact mismatch unreadable probe_error stop}
 for step in $steps; do
     case $step in
         full) full ;;
@@ -291,6 +306,7 @@ for step in $steps; do
         compact) compact ;;
         mismatch) mismatch ;;
         unreadable) unreadable ;;
+        probe_error) probe_error ;;
         start) start ;;
         stop) stop ;;
         *) echo "unknown step $step"; exit 2 ;;

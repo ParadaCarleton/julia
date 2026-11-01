@@ -6963,7 +6963,7 @@ static void reactive_chain_load(jl_image_t *image)
 // chain, whatever the environment: the launcher of a bundle and the oracle
 // know nothing of the mode; the mode itself makes a process that will
 // save an overlay load through the region.
-static int reactive_chain_exists(void) JL_NOTSAFEPOINT
+static int reactive_chain_exists(void)
 {
     const char *image_file = jl_options.image_file;
     if (image_file == NULL)
@@ -6973,6 +6973,10 @@ static int reactive_chain_exists(void) JL_NOTSAFEPOINT
     memcpy(chain_path, image_file, flen);
     strcpy(chain_path + flen, ".chain");
     int exists = access(chain_path, F_OK) == 0;
+    // Only ENOENT is absence; ELOOP or EIO must not drop the overlays silently.
+    // The path leaks on the error: the process aborts.
+    if (!exists && errno != ENOENT)
+        jl_errorf("reactive: cannot probe %s: %s", chain_path, strerror(errno));
     free(chain_path);
     return exists;
 }
