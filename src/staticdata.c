@@ -6791,7 +6791,8 @@ static int reactive_region_grow_const(size_t size)
 // function table composes with the current one through its reuse map;
 // the last overlay's lists, records and roots restore the image. The
 // base image `image` becomes the composed image.
-static void reactive_chain_load(jl_image_t *image)
+// `required` is set when the probe saw the chain: it must still be there.
+static void reactive_chain_load(jl_image_t *image, int required)
 {
     const char *image_file = jl_options.image_file;
     if (image_file == NULL)
@@ -6802,7 +6803,7 @@ static void reactive_chain_load(jl_image_t *image)
     strcpy(chain_path + flen, ".chain");
     FILE *chain = fopen(chain_path, "r");
     if (chain == NULL) {
-        if (errno != ENOENT)
+        if (errno != ENOENT || required)
             jl_errorf("reactive: the chain %s cannot be read: %s", chain_path, strerror(errno));
         free(chain_path);
         return;
@@ -6990,7 +6991,7 @@ JL_DLLEXPORT void jl_restore_system_image(jl_image_t *image, jl_image_buf_t buf)
     reactive_chain_n = 0;
     int has_chain = reactive_chain_exists();
     if (buf.kind == JL_IMAGE_KIND_SO && (reactive_overlay_mode() || has_chain) && reactive_region_load(buf))
-        reactive_chain_load(image);
+        reactive_chain_load(image, has_chain);
     else if (has_chain) // the base alone would drop the edits of the overlays
         jl_errorf("reactive: %s.chain names overlays, but the image cannot load through a region", jl_options.image_file);
 

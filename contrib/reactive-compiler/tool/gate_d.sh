@@ -269,7 +269,7 @@ mismatch() {
 unreadable() {
     local dir=$OUT/image-unreadable
     rm -rf "$dir"; mkdir -p "$dir/sys.so.chain"
-    ln "$JH/usr/lib/julia/sys.so" "$dir/sys.so"
+    cp --reflink=auto "$JH/usr/lib/julia/sys.so" "$dir/sys.so"
     if "$JH/usr/bin/julia" --startup-file=no -J "$dir/sys.so" -e 'exit(0)' > "$OUT/unreadable.log" 2>&1; then
         echo "=== an unreadable chain starts the process"; return 1
     fi
@@ -281,7 +281,7 @@ unreadable() {
 probe_error() {
     local dir=$OUT/image-probe-error
     rm -rf "$dir"; mkdir -p "$dir"
-    ln "$JH/usr/lib/julia/sys.so" "$dir/sys.so"
+    cp --reflink=auto "$JH/usr/lib/julia/sys.so" "$dir/sys.so"
     ln -s sys.so.chain "$dir/sys.so.chain"
     if "$JH/usr/bin/julia" --startup-file=no -J "$dir/sys.so" -e 'exit(0)' > "$OUT/probe-error.log" 2>&1; then
         echo "=== a chain path that cannot be probed starts the process"; return 1
