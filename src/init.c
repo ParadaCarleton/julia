@@ -541,14 +541,59 @@ int jl_isabspath(const char *in) JL_NOTSAFEPOINT
 }
 
 // the tracked path as given, made absolute: files loaded through its symlinks match it
-const char *jl_tracked_path_unresolved = NULL;
+JL_DLLEXPORT const char *jl_tracked_path_unresolved = NULL;
 
-static int path_has_prefix(const char *path, size_t len, const char *prefix) JL_NOTSAFEPOINT
+static int is_pathsep(char c) JL_NOTSAFEPOINT
 {
-    size_t prefix_len = prefix ? strlen(prefix) : 0;
-    return prefix && len >= prefix_len && strncmp(path, prefix, prefix_len) == 0;
+#ifdef _OS_WINDOWS_
+    return c == '/' || c == '\\';
+#else
+    return c == '/';
+#endif
 }
 
+#ifdef _OS_WINDOWS_
+#include <limits.h>
+// whether `path` is `prefix` or lies below it, ignoring case as NTFS does (ordinal, on UTF-16)
+static int path_has_prefix(const char *path, size_t len, const char *prefix) JL_NOTSAFEPOINT
+{
+    if (prefix == NULL)
+        return 0;
+    // a path that does not convert to UTF-16 matches nothing
+    int wprefix_size = MultiByteToWideChar(CP_UTF8, 0, prefix, -1, NULL, 0); // counts the terminator
+    if (len > INT_MAX || wprefix_size <= 0)
+        return 0;
+    int wlen = len == 0 ? 0 : MultiByteToWideChar(CP_UTF8, 0, path, (int)len, NULL, 0);
+    int wprefix_len = wprefix_size - 1;
+    if ((len != 0 && wlen == 0) || wlen < wprefix_len)
+        return 0;
+    wchar_t *wpath = (wchar_t*)malloc_s((wlen + 1) * sizeof(wchar_t));
+    wchar_t *wprefix = (wchar_t*)malloc_s(wprefix_size * sizeof(wchar_t));
+    int same = 0;
+    if ((len == 0 || MultiByteToWideChar(CP_UTF8, 0, path, (int)len, wpath, wlen) == wlen) &&
+        MultiByteToWideChar(CP_UTF8, 0, prefix, -1, wprefix, wprefix_size) == wprefix_size) {
+        same = CompareStringOrdinal(wpath, wprefix_len, wprefix, wprefix_len, TRUE) == CSTR_EQUAL &&
+               (wlen == wprefix_len || wprefix_len == 0 || wprefix[wprefix_len - 1] == L'\\' ||
+                wprefix[wprefix_len - 1] == L'/' || wpath[wprefix_len] == L'\\' || wpath[wprefix_len] == L'/');
+    }
+    free(wpath);
+    free(wprefix);
+    return same;
+}
+#else
+// whether `path` is `prefix` or lies below it; `/a/b` does not hold `/a/bc`
+static int path_has_prefix(const char *path, size_t len, const char *prefix) JL_NOTSAFEPOINT
+{
+    if (prefix == NULL)
+        return 0;
+    size_t prefix_len = strlen(prefix);
+    return len >= prefix_len && strncmp(path, prefix, prefix_len) == 0 &&
+           (len == prefix_len || prefix_len == 0 || is_pathsep(prefix[prefix_len - 1]) || is_pathsep(path[prefix_len]));
+}
+#endif
+
+// Paths are compared as loaded, never resolved: a file reached through a symlink pointing
+// into the tracked realpath is missed, since resolving would cost a filesystem call per method.
 JL_DLLEXPORT int jl_path_is_tracked(const char *path, size_t len) JL_NOTSAFEPOINT
 {
     return path_has_prefix(path, len, jl_options.tracked_path) ||

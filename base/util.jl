@@ -144,6 +144,19 @@ See also [`print`](@ref), [`println`](@ref), [`show`](@ref).
     printstyled(stdout, msg...; bold=bold, italic=italic, underline=underline, blink=blink, reverse=reverse, hidden=hidden, color=color)
 
 """
+The `@path` given to `--code-coverage` or `--track-allocation`, made absolute and normalized.
+`JLOptions().tracked_path` holds its realpath, which misses files loaded through its symlinks.
+The runtime drops the given spelling when it names another directory; the realpath is returned then.
+"""
+function tracked_path_as_given()
+    given = unsafe_load(cglobal(:jl_tracked_path_unresolved, Cstring))
+    if given == C_NULL
+        return unsafe_string(JLOptions().tracked_path)
+    end
+    return unsafe_string(given)
+end
+
+"""
     Base.julia_cmd(juliapath=joinpath(Sys.BINDIR, julia_exename()); cpu_target::Union{Nothing,String}=nothing)
 
 Return a julia command similar to the one of the running process.
@@ -222,7 +235,7 @@ function julia_cmd(julia=joinpath(Sys.BINDIR, julia_exename()); cpu_target::Unio
             elseif opts.code_coverage == 2
                 push!(addflags, "--code-coverage=all")
             elseif opts.code_coverage == 3
-                push!(addflags, "--code-coverage=@$(unsafe_string(opts.tracked_path))")
+                push!(addflags, "--code-coverage=@$(tracked_path_as_given())")
             end
             isempty(coverage_file) || push!(addflags, "--code-coverage=$coverage_file")
         end
@@ -232,7 +245,7 @@ function julia_cmd(julia=joinpath(Sys.BINDIR, julia_exename()); cpu_target::Unio
     elseif opts.malloc_log == 2
         push!(addflags, "--track-allocation=all")
     elseif opts.malloc_log == 3
-        push!(addflags, "--track-allocation=@$(unsafe_string(opts.tracked_path))")
+        push!(addflags, "--track-allocation=@$(tracked_path_as_given())")
     end
     if opts.color == 1
         push!(addflags, "--color=yes")

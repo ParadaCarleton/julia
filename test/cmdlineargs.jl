@@ -627,23 +627,65 @@ let exename = `$(Base.julia_cmd()) --startup-file=no --color=no`
 
         # a tracked path given through a symlink matches files loaded through it
         if !Sys.iswindows()
-            mktempdir() do parent
-                real = realpath(mkdir(joinpath(parent, "Real")))
+            mktempdir() do tmpdir
+                parent = realpath(tmpdir) # a symlinked TMPDIR would make the fixture spellings differ
+                real =realpath(mkdir(joinpath(parent, "Real")))
                 link = joinpath(parent, "Link")
                 symlink(real, link)
-                write(joinpath(real, "linked.jl"), "f(x) = x + 1\nf(1)\n")
+                siblings = [mkdir(joinpath(parent, name)) for name in ("Link_sibling", "Real_sibling")]
+                for d in (real, siblings...)
+                    write(joinpath(d, "linked.jl"), "f(x) = x + 1\nf(1)\n")
+                end
                 outfile = joinpath(dir, "linked.info")
-                for (tracked, loaded) in ((link, link), (link, real), (real, real), (real, link))
-                    srcfile = joinpath(loaded, "linked.jl")
-                    run(`$cov_exename --code-coverage=$outfile --code-coverage=@$tracked $srcfile`)
+                function covers(tracked, srcfile)
+                    cd(parent) do
+                        run(`$cov_exename --code-coverage=$outfile --code-coverage=@$tracked $srcfile`)
+                    end
                     covered = contains(read(outfile, String), "SF:$srcfile")
                     rm(outfile)
-                    # files are compared unresolved, so a symlink below the tracked realpath is missed
+                    return covered
+                end
+                for (tracked, loaded) in ((link, link), (link, real), (real, real), (real, link))
+                    covered = covers(tracked, joinpath(loaded, "linked.jl"))
+                    # files are compared unresolved, so a symlink below the tracked realpath is missed;
+                    # resolving every untracked file would cost a filesystem call per compiled method
                     if (tracked, loaded) == (real, link)
                         @test_broken covered
                     else
                         @test covered
                     end
+                end
+                # the tracked path is matched by whole components after `.`, `..` and `//` are dropped
+                @test covers("./Link//", joinpath(link, "linked.jl"))
+                @test covers("Real/../Link", joinpath(link, "linked.jl"))
+                @test !covers(link, joinpath(siblings[1], "linked.jl"))
+                @test !covers(real, joinpath(siblings[2], "linked.jl"))
+                # `Deep/..` is the parent of Deep's target, not the directory holding Deep
+                inner = mkpath(joinpath(parent, "outer", "inner"))
+                symlink(inner, joinpath(parent, "Deep"))
+                write(joinpath(parent, "outer", "up.jl"), "f(x) = x + 1\nf(1)\n")
+                @test covers("Deep/..", joinpath(parent, "outer", "up.jl"))
+                @test !covers("Deep/..", joinpath(real, "linked.jl"))
+                # a child started with `julia_cmd` tracks the path as given, symlinks included
+                forwarded = readchomp(`$cov_exename --code-coverage=@$link -e 'print(Base.julia_cmd())'`)
+                @test occursin("--code-coverage=@$link", forwarded)
+                # a spelling the runtime dropped (`Deep/..`) forwards the tracked realpath
+                for option in ("--code-coverage", "--track-allocation")
+                    forwarded = cd(parent) do
+                        readchomp(`$cov_exename $option=@Deep/.. -e 'print(Base.julia_cmd())'`)
+                    end
+                    @test occursin("$option=@$(joinpath(parent, "outer"))", forwarded)
+                end
+                # the lexical target (`parent/src`) is absent, so the resolved `outer/src` is tracked
+                src_dir = mkpath(joinpath(parent, "outer", "src"))
+                write(joinpath(src_dir, "deep.jl"), "f(x) = x + 1\nf(1)\n")
+                @test !ispath(joinpath(parent, "src"))
+                @test covers("Deep/../src", joinpath(src_dir, "deep.jl"))
+                for option in ("--code-coverage", "--track-allocation")
+                    forwarded = cd(parent) do
+                        readchomp(`$cov_exename $option=@Deep/../src -e 'print(Base.julia_cmd())'`)
+                    end
+                    @test occursin("$option=@$src_dir", forwarded)
                 end
             end
         end
