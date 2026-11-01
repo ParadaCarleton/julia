@@ -57,7 +57,7 @@ end
     Core.eval(Vendor, :(Base.show(io::IO, ::Union{Widget,Gadget}, ::Bool) = nothing))
     Core.eval(Vendor, :(Base.show(io::IO, ::Shape, ::Bool) = nothing))
     Core.eval(Vendor, :(Base.show(io::IO, ::T, ::Char) where {T<:Widget} = nothing))
-    Core.eval(Vendor, :(Base.show(io::IO, ::Vector{T}, ::Char) where {T>:Widget} = nothing))
+    Core.eval(Vendor, :(Base.show(io::IO, ::Vector{T}, ::Char) where {Widget<:T<:Widget} = nothing))
     Core.eval(Vendor, :(Base.show(io::IO, ::Val{Widget()}) = nothing))
     Core.eval(Vendor, :(Base.show(io::IO, ::Bool, xs::Vararg{Widget,2}) = nothing))
     Core.eval(Vendor, :(Base.show(io::IO, ::Widget, xs::Int...) = nothing))
@@ -88,6 +88,11 @@ end
     @test_throws StrictModeError Core.eval(Vendor, :(Base.show(io::IO, ::Vector{T}) where {T<:Widget} = nothing))  # (IO, Vector{Union{}})
     @test_throws StrictModeError Core.eval(Vendor, :(Base.show(io::IO, ::Vector{<:Widget}, ::Char) = nothing))
     @test_throws StrictModeError Core.eval(Vendor, :(Base.show(io::IO, ::Type{T}) where {T<:Widget} = nothing))  # (IO, Type{Union{}})
+    # A lower bound alone is not enough: `T = Any` satisfies `T>:Widget` and names no owned type.
+    @test_throws StrictModeError Core.eval(Vendor, :(Base.show(io::IO, ::Vector{T}, ::Bool) where {T>:Widget} = nothing))  # (IO, Vector{Any}, Bool)
+    @test_throws StrictModeError Core.eval(Vendor, :(Base.show(io::IO, ::Type{T}, ::Bool) where {T>:Widget} = nothing))  # (IO, Type{Any}, Bool)
+    @test_throws StrictModeError Core.eval(Vendor, :(Base.show(io::IO, ::Vector{Vector{T}}, ::Bool) where {T>:Widget} = nothing))
+    @test_throws StrictModeError Core.eval(Vendor, :(Base.show(io::IO, ::Tuple{Type{T}}, ::Bool) where {T>:Widget} = nothing))
     @test owned_shows() == before
     @test_throws StrictModeError Core.eval(Vendor, :((::Union{typeof(+),typeof(frob)})(a::Int, b::Int) = 0))
     @test !any(m -> m.module === Vendor, methods(+).ms)

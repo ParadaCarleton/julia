@@ -93,7 +93,8 @@ fixed and positive, since `Vararg{T}` also matches zero arguments.
 
 `exact` marks an invariant parameter (anything below a non-`Tuple` type's parameter):
 a matching value's type contains that parameter verbatim, so mentioning one owned type
-suffices there. An invariant `TypeVar` may be `Union{}`, so only its lower bound counts.
+suffices there. An invariant `TypeVar` counts only when both bounds are owned and the
+lower bound is not `Union{}`, so every type between the bounds is owned.
 """
 function _is_owned(home::Module, @nospecialize(T), exact::Bool=false)
     if T isa DataType
@@ -116,8 +117,11 @@ function _is_owned(home::Module, @nospecialize(T), exact::Bool=false)
         end
         return _is_owned(home, T.a) && _is_owned(home, T.b)
     elseif T isa TypeVar
-        # An invariant typevar can be `Union{}`, so only its lower bound is guaranteed present.
-        return _is_owned(home, exact ? T.lb : T.ub, exact)
+        # An invariant typevar takes any type between its bounds, so both must be owned and nonempty.
+        if exact
+            return T.lb !== Union{} && _is_owned(home, T.lb, true) && _is_owned(home, T.ub, true)
+        end
+        return _is_owned(home, T.ub)
     elseif T isa Core.TypeofVararg
         # An unbounded `Vararg` is part of the exact type; a typevar length can still be 0.
         if exact && !(isdefined(T, :N) && T.N isa TypeVar)

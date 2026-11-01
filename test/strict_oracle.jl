@@ -18,7 +18,7 @@ const LEAVES = (FOREIGN_LEAVES..., Widget, AbstractWidget, Cog)
 const VALS = (1, :x, Widget(), Cog())
 
 "Concrete types that name only foreign types, so they witness piracy."
-const UNIVERSE = DataType[Int, Float64, Bool, String, Symbol, Nothing,
+const UNIVERSE = DataType[Any, Int,Float64, Bool, String, Symbol, Nothing,
     map(L -> Vector{L}, FOREIGN_LEAVES)..., map(L -> Type{L}, FOREIGN_LEAVES)...,
     Vector{Union{}}, Type{Union{}}, Vector{Union{Int,String}},Vector{Vector{Int}}, Tuple{}, Tuple{Int}, Tuple{Int,String},
     Val{1}, Val{:x}]
@@ -39,7 +39,7 @@ A type from the grammar: leaves, `Union`, `Vector{X}`, `Vector{<:X}`, `Tuple`, `
 and `Val{v}`. `pick(n)` returns a choice in `1:n`.
 """
 function random_type(pick, depth::Int)
-    kind = depth == 0 ? 1 : pick(7)
+    kind = depth == 0 ? 1 : pick(8)
     if kind == 1
         return LEAVES[pick(length(LEAVES))]
     elseif kind == 2
@@ -49,6 +49,8 @@ function random_type(pick, depth::Int)
     elseif kind == 4
         tv = TypeVar(:T, random_type(pick, depth - 1))
         return UnionAll(tv, Vector{tv})
+    elseif kind == 8
+        return scoped_occurrence(pick, depth - 1)
     elseif kind == 5
         elems = ntuple(_ -> random_type(pick, depth - 1), pick(3) - 1)
         return Tuple{elems..., random_tail(pick, depth - 1)...}
@@ -57,6 +59,28 @@ function random_type(pick, depth::Int)
     else
         return Val{VALS[pick(length(VALS))]}
     end
+end
+
+"""
+A scoped typevar with random lower and upper bounds (each possibly trivial), wrapped in
+1 or 2 of `Vector`, `Type` and `Tuple`: `Vector{T}`, `Vector{Vector{T}}`, `Tuple{Type{T}}` ...
+"""
+function scoped_occurrence(pick, depth::Integer)
+    lb = Union{}
+    if pick(2) == 2
+        lb = random_type(pick, depth)
+    end
+    ub = Any
+    if pick(2) == 2
+        ub = random_type(pick, depth)
+    end
+    tv = TypeVar(:T, lb, ub)
+    body = tv
+    for _ in 1:pick(2)
+        wrapper = (Vector, Type, Tuple)[pick(3)]
+        body = wrapper{body}
+    end
+    return UnionAll(tv, body)
 end
 
 "No tail, `Vararg{X}`, or `Vararg{X,N}` with `N` in `0:2`, as a tuple of at most one element."
