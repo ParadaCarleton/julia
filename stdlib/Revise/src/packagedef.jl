@@ -3,6 +3,7 @@ Base.Experimental.@optlevel 1
 using FileWatching, REPL, UUIDs
 using LibGit2: LibGit2
 using CRC32c: crc32c
+using Serialization: serialize
 using Base: IdSet, PkgId
 using Base.Meta: isexpr
 using Core: CodeInfo, MethodTable
@@ -78,6 +79,53 @@ function apply_worker_action(p, mod::Module, expr)
     try
         @invokelatest remotecall_impl(Core.eval, p, mod, expr)
     catch
+    end
+    return nothing
+end
+
+# The workers that this process is the master of.
+function master_workers()
+    return [p for get_workers in workers_functions if @invokelatest(is_master_worker(get_workers))
+              for p in @invokelatest(get_workers()) if !@invokelatest(is_master_worker(p))]
+end
+
+# Record `expr` for replay and evaluate it in `mod` on every current worker, from the master.
+function replay_on_workers(mod::Module, expr::Expr)
+    record_worker_replay!(mod, expr)
+    for p in master_workers()
+        apply_worker_action(p, mod, expr)  # don't error if `mod` isn't defined on the worker
+    end
+    return nothing
+end
+
+# Have each worker store its world age, before this revision changes anything there, in
+# its `pre_revision_world` (see `init_worker`). The master does not wait for a reply, so a
+# busy worker does not stall the revision. Returns the workers that were asked.
+function record_worker_worlds()
+    isempty(revision_queue) && return []
+    ps = master_workers()
+    for p in ps
+        apply_worker_action(p, Main, :(pre_revision_world = Base.get_world_counter()))
+    end
+    return ps
+end
+
+# Delete `m` on each of `ps`. A worker has already redefined the types in `m.sig`, so it
+# deserializes the signature in its `pre_revision_world` (see `record_worker_worlds`),
+# where those names still resolve to the old types. This relies on each worker running
+# the master's messages in the order they were sent.
+function delete_method_on_workers(m::Method, ps::AbstractVector)
+    mt = if isdefined(m, :external_mt)
+        m.external_mt::MethodTable
+    else
+        nothing
+    end
+    record_worker_replay!(Main, :(delete_method_by_sig($mt, $(m.sig))))
+    io = IOBuffer()
+    serialize(io, m.sig)
+    sigbytes = take!(io)
+    for p in ps
+        apply_worker_action(p, Main, :(delete_method_by_sig($mt, $sigbytes)))
     end
     return nothing
 end
@@ -294,6 +342,14 @@ Global variable, a set of `Manifest.toml` files from the active projects used du
 const watched_manifests = Set{String}()
 
 """
+    Revise.extensions_stale
+
+Global variable, set when the active manifest changes so that the next [`revise`](@ref)
+loads newly declared package extensions (see `load_new_extensions`).
+"""
+const extensions_stale = Threads.Atomic{Bool}(false)
+
+"""
     Revise.revision_queue
 
 Global variable, `revision_queue` holds `(pkgdata,filename)` pairs that we need to revise, meaning
@@ -337,6 +393,52 @@ methods immediately.
 Locking is covered by `revise_lock`.
 """
 const missing_file_grace = Ref(5.0)
+
+"""
+    Revise.rethrow_errors
+
+A `Ref{Bool}` (default `false`) controlling how Revise handles errors it catches.
+
+By default, Revise catches errors that arise while parsing, deleting, or
+evaluating revised code, records them in [`Revise.queue_errors`](@ref), reports
+them, and keeps the session running. Setting `Revise.rethrow_errors[] = true`
+(which takes effect immediately in a running session) makes those catch sites
+rethrow instead, so that the first failure propagates to the caller of
+[`revise`](@ref) (or `includet`, `Revise.track`, ...) with its original
+backtrace. This is intended for debugging Revise itself.
+
+Two kinds of failure are thrown only once the stage of revision that produced them
+is complete: evaluation of revised expressions, where a failed expression is retried
+as long as other expressions in the same revision succeed (it may use a definition
+from a file evaluated later), and re-evaluation of methods and types after a binding
+changes. These are thrown wrapped in a `CapturedException` that carries the original
+backtrace, so turning this on does not change which expressions these stages
+successfully revise.
+
+Independent of this setting, Revise records each error caught at these sites in the
+"Error" group of [`Revise.debug_logger`](@ref), along with its backtrace.
+"""
+const rethrow_errors = Ref(false)
+
+# Record an error caught by Revise in the "Error" group of the debug log. `kwargs`
+# are added to the log record.
+function log_caught(err, bt, msg::AbstractString; kwargs...)
+    with_logger(_debug_logger) do
+        @debug msg _group="Error" time=time() exception=(err, bt) kwargs...
+    end
+    return nothing
+end
+
+# Log a caught error and rethrow it if `throw` or `rethrow_errors[]` is true.
+# Must be called from within a `catch` block.
+function handle_caught(err, bt, msg::AbstractString; throw::Bool=false, kwargs...)
+    log_caught(err, bt, msg; kwargs...)
+    (throw || rethrow_errors[]) && rethrow()
+    return nothing
+end
+
+# Throw an error recorded in an earlier `catch` block, if `rethrow_errors[]` is true.
+throw_deferred(err, bt) = rethrow_errors[] && Base.throw(CapturedException(err, bt))
 
 # When a queued file is missing at revision time, records when `revise` first
 # noticed the absence; the entry is removed when the file reappears. Locking is
@@ -703,13 +805,21 @@ else
     retract_dropped_exports!(::Module, ::ExprsInfos, ::ExprsInfos) = nothing
 end
 
+# Bindings to retract after revising the inclusion `idx` of `file`.
+struct Retraction
+    pkgdata::PkgData
+    file::String
+    idx::Int
+    mod_exs_infos_old::ModuleExprsInfos
+    mod_exs_infos_new::ModuleExprsInfos
+end
+
 # Retract globals removed from a file (issues #1106 and #1107). Requires
 # `Base.delete_binding` (Julia 1.12+); the fallback is a no-op.
 @static if isdefined(Base, :delete_binding)
-    function retract_removed_bindings!(
-            mod_exs_infos_old::ModuleExprsInfos, mod_exs_infos_new::ModuleExprsInfos,
-            world::UInt, defaultmode::Symbol,
-        )
+    function retract_removed_bindings!(r::Retraction, world::UInt, batch::Vector{Retraction} = Retraction[])
+        (; pkgdata, idx, mod_exs_infos_old, mod_exs_infos_new) = r
+        defaultmode = default_revise_mode(pkgdata)
         for (mod, exs_infos_old) in mod_exs_infos_old
             exs_infos_new = get(mod_exs_infos_new, mod, empty_exs_infos)
             mode = revise_mode(mod, defaultmode)
@@ -729,6 +839,10 @@ end
                 add_imported_names!(names, rex.ex)
                 retract_assigns && add_assigned_names!(names, rex.ex)
             end
+            # Other files may bind the same names, e.g. each with its own `using Pkg: foo`.
+            # Skip the scan when this file rebinds them all, e.g. `const N = 1` -> `const N = 2`.
+            all(n -> n in kept || n in reestablished, removed) ||
+                add_names_bound_elsewhere!(kept, reestablished, removed, pkgdata, idx, mod, batch, retract_assigns)
             with_logger(_debug_logger) do
                 for name in removed
                     name in kept && continue
@@ -743,6 +857,38 @@ end
                     end
                 end
             end
+        end
+        return nothing
+    end
+
+    # Add the names that `pkgdata`'s other inclusions bind in `mod`, stopping once all of
+    # `removed` is kept. Files with a pending retraction in `batch` still store their old
+    # expressions; diff those against the new.
+    function add_names_bound_elsewhere!(
+            kept::Set{Symbol}, reestablished::Set{Symbol}, removed::Set{Symbol}, pkgdata::PkgData,
+            idx::Int, mod::Module, batch::Vector{Retraction}, retract_assigns::Bool,
+        )
+        current = Dict{Tuple{String,Int},ModuleExprsInfos}()
+        for r in batch
+            r.pkgdata === pkgdata && (current[(r.file, r.idx)] = r.mod_exs_infos_new)
+        end
+        for (j, file) in enumerate(srcfiles(pkgdata))
+            j == idx && continue
+            mod_exs_infos_new = try
+                source_view(pkgdata, file, j, current)
+            catch err
+                err isa StaleCacheError || rethrow()
+                continue
+            end
+            exs_infos_old = get(fileinfo(pkgdata, j).mod_exs_infos, mod, empty_exs_infos)
+            exs_infos_new = get(mod_exs_infos_new, mod, empty_exs_infos)
+            unchanged = exs_infos_new === exs_infos_old
+            for rex in keys(exs_infos_new)
+                names = (unchanged || haskey(exs_infos_old, rex)) ? kept : reestablished
+                add_imported_names!(names, rex.ex)
+                retract_assigns && add_assigned_names!(names, rex.ex)
+            end
+            all(in(kept), removed) && break
         end
         return nothing
     end
@@ -834,11 +980,8 @@ end
         return nothing
     end
 else
-    retract_removed_bindings!(::ModuleExprsInfos, ::ModuleExprsInfos, ::UInt, ::Symbol) = nothing
+    retract_removed_bindings!(::Retraction, ::UInt, ::Vector{Retraction} = Retraction[]) = nothing
 end
-
-# A pending binding retraction: `(pkgdata, file, idx, mod_exs_infos_old, mod_exs_infos_new)`.
-const Retraction = Tuple{PkgData,String,Int,ModuleExprsInfos,ModuleExprsInfos}
 
 # Retract now, or append to `retractions` when the caller runs retractions only after
 # every file's deletions. Deleting methods or types can extract signatures from files not
@@ -848,10 +991,11 @@ const Retraction = Tuple{PkgData,String,Int,ModuleExprsInfos,ModuleExprsInfos}
 function retract_or_defer!(retractions::Union{Nothing,Vector{Retraction}}, pkgdata::PkgData,
                            file::AbstractString, idx::Int, mod_exs_infos_old::ModuleExprsInfos,
                            mod_exs_infos_new::ModuleExprsInfos, world::UInt)
+    r = Retraction(pkgdata, String(file)::String, idx, mod_exs_infos_old, mod_exs_infos_new)
     if retractions === nothing
-        retract_removed_bindings!(mod_exs_infos_old, mod_exs_infos_new, world, default_revise_mode(pkgdata))
+        retract_removed_bindings!(r, world)
     else
-        push!(retractions, (pkgdata, String(file)::String, idx, mod_exs_infos_old, mod_exs_infos_new))
+        push!(retractions, r)
     end
     return nothing
 end
@@ -1031,15 +1175,7 @@ function eval_rex(rex_new::RelocatableExpr, exs_infos_old::ExprsInfos, mod::Modu
             if !isexpr(thunk, :thunk)
                 thunk = ex
             end
-            record_worker_replay!(mod, thunk)
-            for get_workers in workers_functions
-                if @invokelatest is_master_worker(get_workers)
-                    for p in @invokelatest get_workers()
-                        @invokelatest(is_master_worker(p)) && continue
-                        apply_worker_action(p, mod, thunk)  # don't error if `mod` isn't defined on the worker
-                    end
-                end
-            end
+            replay_on_workers(mod, thunk)
         else
             exinfos = exs_infos_old[rex_old]
             # Update location info
@@ -1129,7 +1265,7 @@ function instantiate_sigs!(mod_exs_infos::ModuleExprsInfos; mode::Symbol=:sigs,
                 exs_infos[rex] = exinfos
                 includes === nothing || append!(includes, incs)
             catch err
-                if (mode !== :sigs || get(kwargs, :always_rethrow, false) ||
+                if (mode !== :sigs || get(kwargs, :always_rethrow, false) || rethrow_errors[] ||
                     err isa InterruptException || err isa SignatureExtractionError)
                     rethrow()
                 end
@@ -1601,7 +1737,7 @@ function orphaned_includes(parsed; throw::Bool=false)
         try
             append!(orphans, orphaned_includes(pkgdata, parsed))
         catch err
-            (throw || isa(err, InterruptException)) && rethrow()
+            handle_caught(err, catch_backtrace(), "OrphanScanFailed"; throw = throw || isa(err, InterruptException))
             @error "scan for removed `include`s failed for $(PkgId(pkgdata)); keeping its files tracked" exception=(err, catch_backtrace())
         end
     end
@@ -1669,8 +1805,17 @@ struct ReevalInfo
     ) = new(reeval, mod, exs_infos, rex, pkgdata, file)
 end
 
-function redefine_bindings!(revision_errors::Vector{Tuple{PkgData,String}}, reeval_list::IdSet{Union{Method,Type}}, world::UInt)
+function redefine_bindings!(revision_errors::Vector{Tuple{PkgData,String}}, reeval_list::IdSet{Union{Method,Type}}, world::UInt, worker_ps::AbstractVector)
     reeval_infos = ReevalInfo[]
+    # Names of the types in `reeval_list`, all of which are bound at `world`. A `TypeInfo`
+    # outside this set cannot match; skipping it avoids reading, at `world`, a binding
+    # created later in this revision (a backdated-const access).
+    reeval_typenames = Set{Tuple{Module,Symbol}}()
+    for reeval in reeval_list
+        reeval isa Type || continue
+        dt = Base.unwrap_unionall(reeval)
+        dt isa DataType && push!(reeval_typenames, (dt.name.module, dt.name.name))
+    end
 
     # N.B. This traverse could become expensive when Revise tracked code becomes large
     # We could optimize this part by preparing a `CodeTracking.ex_info` cache that incorporates
@@ -1695,6 +1840,7 @@ function redefine_bindings!(revision_errors::Vector{Tuple{PkgData,String}}, reev
                             end
                         else exinfo::TypeInfo
                             typeinfo = exinfo
+                            (typeinfo.typname.module, typeinfo.typname.name) in reeval_typenames || continue
                             if Base.invoke_in_world(world, isdefinedglobal, typeinfo.typname.module, typeinfo.typname.name)
                                 typ = Base.invoke_in_world(world, getglobal, typeinfo.typname.module, typeinfo.typname.name)
                                 if typ isa Type && typ in reeval_list
@@ -1707,20 +1853,24 @@ function redefine_bindings!(revision_errors::Vector{Tuple{PkgData,String}}, reev
             end
         end
     end
+    failures = Tuple{Any,Any}[]   # `(err, bt)`; the first is thrown at the end under `rethrow_errors[]`
     for (; reeval, mod, exs_infos, rex, pkgdata, file) in reeval_infos
         reeval isa Type || continue
         with_logger(_debug_logger) do
             @debug "ReevalType" _group="Action" time=time() deltainfo=(reeval,mod,rex)
             try
-                newexinfos, _, _ = eval_with_signatures(mod, rex.ex; mode=:eval)
+                newexinfos, _, thunk = eval_with_signatures(mod, rex.ex; mode=:eval)
                 exs_infos[rex] = newexinfos
+                replay_on_workers(mod, isexpr(thunk, :thunk) ? thunk : rex.ex)
             catch err
                 # Re-evaluation failed, likely due to type incompatibility
                 # Clear exs_infos cache for this `rex` so that we will retry evaluation when methods become compatible
                 delete!(exs_infos, rex)
-                @debug "ReevalTypeFailed" _group="Action" time=time() deltainfo=(reeval,mod,rex,err)
+                bt = catch_backtrace()
+                log_caught(err, bt, "ReevalTypeFailed"; deltainfo=(reeval,mod,rex))
                 push!(revision_errors, (pkgdata, file))
-                queue_errors[(pkgdata, file)] = (err, catch_backtrace())
+                queue_errors[(pkgdata, file)] = (err, bt)
+                push!(failures, (err, bt))
             end
         end
     end
@@ -1734,7 +1884,12 @@ function redefine_bindings!(revision_errors::Vector{Tuple{PkgData,String}}, reev
         with_logger(_debug_logger) do
             @debug "ReevalDeleteMethod" _group="Action" time=time() deltainfo=(reeval.sig, MethodSummary(reeval))
             # ensure that "old data" doesn't get run with "old methods"
-            try Base.delete_method(reeval) catch end
+            try
+                delete_method_on_workers(reeval, worker_ps)
+                Base.delete_method(reeval)
+            catch err
+                handle_caught(err, catch_backtrace(), "ReevalDeleteMethodFailed"; deltainfo=(reeval.sig, MethodSummary(reeval)))
+            end
         end
     end
     evaluated_rexes = Set{Tuple{Module,RelocatableExpr}}()
@@ -1745,18 +1900,22 @@ function redefine_bindings!(revision_errors::Vector{Tuple{PkgData,String}}, reev
         with_logger(_debug_logger) do
             @debug "ReevalMethod" _group="Action" time=time() deltainfo=(reeval, reeval.module, rex)
             try
-                newexinfos, _, _ = eval_with_signatures(mod, rex.ex; mode=:eval)
+                newexinfos, _, thunk = eval_with_signatures(mod, rex.ex; mode=:eval)
                 exs_infos[rex] = newexinfos
+                replay_on_workers(mod, isexpr(thunk, :thunk) ? thunk : rex.ex)
             catch err
                 # Re-evaluation failed, likely due to type incompatibility
                 # Clear exs_infos cache for this `rex` so that we will retry evaluation when methods become compatible
                 delete!(exs_infos, rex)
-                @debug "ReevalMethodFailed" _group="Action" time=time() deltainfo=(reeval,mod,rex,err)
+                bt = catch_backtrace()
+                log_caught(err, bt, "ReevalMethodFailed"; deltainfo=(reeval,mod,rex))
                 push!(revision_errors, (pkgdata, file))
-                queue_errors[(pkgdata, file)] = (err, catch_backtrace())
+                queue_errors[(pkgdata, file)] = (err, bt)
+                push!(failures, (err, bt))
             end
         end
     end
+    isempty(failures) || throw_deferred(first(failures)...)
     return revision_errors
 end
 
@@ -1847,7 +2006,7 @@ function realias_orphaned_bindings!(mod_exs_infos_new::ModuleExprsInfos,
                     @debug "RealiasOrphan" _group="Action" time=time() deltainfo=(mod, n, src)
                     push!(repaired, (mod, n, src))
                 catch err
-                    @debug "RealiasOrphanFailed" _group="Action" time=time() deltainfo=(mod, n, err)
+                    handle_caught(err, catch_backtrace(), "RealiasOrphanFailed"; deltainfo=(mod, n))
                 end
             end
         end
@@ -2163,7 +2322,7 @@ function schedule_include!(pass::RevisionPass, pkgdata::PkgData, file::AbstractS
             q = j + 1
         end
     catch err
-        (pass.throw || isa(err, InterruptException)) && rethrow()
+        handle_caught(err, catch_backtrace(), "IncludeOrderScanFailed"; throw = pass.throw || isa(err, InterruptException))
         @error "scan for the include order of $(PkgId(pkgdata)) failed; evaluating $file now" exception=(err, catch_backtrace())
         q = p + 1
     end
@@ -2213,7 +2372,9 @@ function evaluate_entry!(pass::RevisionPass, entry::RevisionEntry, p::Int)
                 delete!(pending, mod)
                 changed = true
             catch e
+                # Retried in later rounds; see `evaluate_worklist!`.
                 entry.err, entry.bt = e, catch_backtrace()
+                log_caught(e, entry.bt, "EvalFailed"; mod, file)
                 pass.interrupt |= isa(e, InterruptException)
             end
         end
@@ -2261,6 +2422,10 @@ function evaluate_worklist!(pass::RevisionPass)
             queue_errors[(pkgdata, file)] = (err, entry.bt)
         end
     end
+    for entry in worklist
+        (isempty(entry.pending) || entry.err === nothing) && continue
+        throw_deferred(entry.err, entry.bt)
+    end
     return nothing
 end
 
@@ -2278,6 +2443,7 @@ function _revise(; throw::Bool=false)
 
     # Restore relinquished watches before draining the revision queue.
     rearm_watching()
+    new_extensions = Threads.atomic_xchg!(extensions_stale, false)
 
     @lock revise_lock begin
         have_queue_errors = !isempty(queue_errors)
@@ -2287,6 +2453,7 @@ function _revise(; throw::Bool=false)
         reeval_list = IdSet{Union{Method,Type}}()
         handled_types = IdSet{Type}()
         world = Base.get_world_counter()
+        worker_ps = record_worker_worlds()
 
         # Do all the deletion first. This ensures that a method that moved from one file to another
         # won't get redefined first and deleted second.
@@ -2347,7 +2514,7 @@ function _revise(; throw::Bool=false)
                     pending_type_deletion |= __bpart__[] && has_pending_type_deletion(mod_exs_infos_new, mod_exs_infos_old)
                     push!(parsed, (pkgdata, file, idx, mod_exs_infos_new, mod_exs_infos_old, fileok))
                 catch err
-                    throw && Base.throw(err)
+                    handle_caught(err, catch_backtrace(), "ParseFailed"; throw, file)
                     interrupt |= isa(err, InterruptException)
                     push!(revision_errors, (pkgdata, file))
                     queue_errors[(pkgdata, file)] = (err, catch_backtrace())
@@ -2384,7 +2551,7 @@ function _revise(; throw::Bool=false)
                     push!(finished_idx, idx)
                 end
             catch err
-                throw && Base.throw(err)
+                handle_caught(err, catch_backtrace(), "DeleteFailed"; throw, file)
                 interrupt |= isa(err, InterruptException)
                 push!(revision_errors, (pkgdata, file))
                 queue_errors[(pkgdata, file)] = (err, catch_backtrace())
@@ -2397,18 +2564,19 @@ function _revise(; throw::Bool=false)
                 delete_orphaned_include!(pkgdata, file, idx, unwatch, reeval_list, handled_types, world, predictions; retractions)
                 push!(deleted_orphans, (pkgdata, file, idx, unwatch))
             catch err
-                throw && Base.throw(err)
+                handle_caught(err, catch_backtrace(), "DeleteOrphanFailed"; throw, file)
                 interrupt |= isa(err, InterruptException)
                 push!(revision_errors, (pkgdata, file))
                 queue_errors[(pkgdata, file)] = (err, catch_backtrace())
             end
         end
         # Retract bindings only after all deletions (see `retract_or_defer!`).
-        for (pkgdata, file, idx, mod_exs_infos_old, mod_exs_infos_new) in retractions
+        for r in retractions
+            (; pkgdata, file, idx) = r
             try
-                retract_removed_bindings!(mod_exs_infos_old, mod_exs_infos_new, world, default_revise_mode(pkgdata))
+                retract_removed_bindings!(r, world, retractions)
             catch err
-                throw && Base.throw(err)
+                handle_caught(err, catch_backtrace(), "RetractFailed"; throw, file)
                 interrupt |= isa(err, InterruptException)
                 push!(revision_errors, (pkgdata, file))
                 queue_errors[(pkgdata, file)] = (err, catch_backtrace())
@@ -2452,7 +2620,7 @@ function _revise(; throw::Bool=false)
             end
         end
         # `reeval_list` also includes surviving duplicate definitions (issue #1105).
-        isempty(reeval_list) || redefine_bindings!(revision_errors, reeval_list, world)
+        isempty(reeval_list) || redefine_bindings!(revision_errors, reeval_list, world, worker_ps)
 
         # Error handling
         if interrupt
@@ -2505,6 +2673,8 @@ function _revise(; throw::Bool=false)
 
         process_user_callbacks!(; throw)
     end   # @lock revise_lock
+    # Outside `revise_lock`, which must not be held while taking `require_lock` (see `update_pkgversion!`)
+    new_extensions && load_new_extensions(; throw)
 
     nothing
 end
@@ -3061,8 +3231,8 @@ function revise_first(ex)
             end
         end
     end
-    # Check for queued revisions, and if so call `revise` first before executing the expression
-    return Expr(:toplevel, :($isempty($revision_queue) || $(Base.invokelatest)($revise)), ex)
+    # Check for queued revisions or new extensions, and if so call `revise` first before executing the expression
+    return Expr(:toplevel, :($isempty($revision_queue) && !$extensions_stale[] || $(Base.invokelatest)($revise)), ex)
 end
 
 steal_repl_backend(_...) = @warn """
@@ -3098,6 +3268,15 @@ function init_worker(p::AbstractWorker)
         function delete_method_by_sig(mt::Union{Nothing, Core.MethodTable}, @nospecialize sig)
             m = whichtt(mt, sig)
             isa(m, Method) && Base.delete_method(m)
+        end
+        # Set by the master at the start of each revision (see `record_worker_worlds`)
+        global pre_revision_world::UInt = Base.get_world_counter()
+        function delete_method_by_sig(mt::Union{Nothing, Core.MethodTable}, sigbytes::AbstractVector{UInt8})
+            # Look up the loaded module by `PkgId`: `import Serialization` would require
+            # it to be resolvable from the worker's load path.
+            Serialization = Base.root_module(Base.PkgId(Base.UUID("9e88b42a-f829-5b0c-bbe9-9e923198166b"), "Serialization"))
+            sig = Base.invoke_in_world(pre_revision_world, Serialization.deserialize, IOBuffer(sigbytes))
+            delete_method_by_sig(mt, sig)
         end
     end)
     @invokelatest(is_master_worker(p)) && return nothing

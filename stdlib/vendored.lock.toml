@@ -12,20 +12,20 @@ repo = "https://github.com/vtjnash/Glob.jl"
 requested = "release"
 
 [JuliaInterpreter]
-commit = "be9bb0c1a3dde5b7f79b0ce48a2f41c227324c2d"
-ref = "v0.12.0"
+commit = "0c3adb4859401971b3b1040e5767bdc2d9414d08"
+ref = "v0.12.2"
 repo = "https://github.com/JuliaDebug/JuliaInterpreter.jl"
 requested = "release"
 
 [LoweredCodeUtils]
-commit = "55d5b8b1415cc3ba68ce0bd9c2c77ea6e4151659"
-ref = "v3.10.0"
+commit = "6f5c109b054a9f5c04aa042e6fe958fd4cd4f6b7"
+ref = "v3.10.2"
 repo = "https://github.com/JuliaDebug/LoweredCodeUtils.jl"
 requested = "release"
 
 [OrderedCollections]
-commit = "f6621b541792c4c988fbec342fc03d819f66c7a2"
-ref = "v2.0.2"
+commit = "3e99c4b5ebd46a26153a477b21ee370c97e91daa"
+ref = "v2.0.3"
 repo = "https://github.com/JuliaCollections/OrderedCollections.jl"
 requested = "release"
 
@@ -36,8 +36,8 @@ repo = "https://github.com/ParadaCarleton/package-compiler"
 requested = "reactive"
 
 [Preferences]
-commit = "5aa68d101a2dbd4c3db64e2a5b4f7d19026644b6"
-ref = "v1.6.0"
+commit = "a74ace1c82e012735e08b1e39aba3cdf0214f0dd"
+ref = "v1.6.1"
 repo = "https://github.com/JuliaPackaging/Preferences.jl"
 requested = "release"
 
@@ -48,8 +48,8 @@ repo = "https://github.com/JuliaPackaging/RelocatableFolders.jl"
 requested = "release"
 
 [Revise]
-commit = "32638add4258d9a41ddedae377df19aa3dc1e295"
-ref = "v3.17.2"
+commit = "3abb43f1c6ff7f9a8cd42de08817fa7e5f7c9f09"
+ref = "v3.18.0"
 repo = "https://github.com/timholy/Revise.jl"
 requested = "release"
 

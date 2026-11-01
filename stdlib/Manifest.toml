@@ -82,7 +82,7 @@ version = "1.11.0"
 [[deps.JuliaInterpreter]]
 deps = ["CodeTracking", "InteractiveUtils", "Random"]
 uuid = "aa1ae85d-cabe-5617-a682-6adf51b2e16a"
-version = "0.12.0"
+version = "0.12.2"
 
 [[deps.JuliaSyntaxHighlighting]]
 deps = ["StyledStrings"]
@@ -155,7 +155,7 @@ version = "1.11.0"
 [[deps.LoweredCodeUtils]]
 deps = ["CodeTracking", "Compiler", "JuliaInterpreter"]
 uuid = "6f1432cf-f94c-5a45-995e-cdbf5db27b0b"
-version = "3.10.0"
+version = "3.10.2"
 
 [[deps.MPFR_jll]]
 deps = ["Artifacts", "CompilerSupportLibraries_jll", "GMP_jll", "Libdl"]
@@ -196,7 +196,7 @@ version = "3.5.8+0"
 
 [[deps.OrderedCollections]]
 uuid = "bac558e1-5e72-5ebc-8fee-abe8a469f55d"
-version = "2.0.2"
+version = "2.0.3"
 
 [[deps.PCRE2_jll]]
 deps = ["Artifacts", "Libdl"]
@@ -220,7 +220,7 @@ weakdeps = ["REPL"]
 [[deps.Preferences]]
 deps = ["TOML"]
 uuid = "21216c6a-2e73-6563-6e65-726566657250"
-version = "1.6.0"
+version = "1.6.1"
 
 [[deps.Printf]]
 deps = ["Unicode"]
@@ -248,9 +248,9 @@ uuid = "05181044-ff0b-4ac5-8273-598c1e38db00"
 version = "1.0.1"
 
 [[deps.Revise]]
-deps = ["CRC32c", "CodeTracking", "FileWatching", "JuliaInterpreter", "LibGit2", "LoweredCodeUtils", "OrderedCollections", "Preferences", "REPL", "UUIDs"]
+deps = ["CRC32c", "CodeTracking", "FileWatching", "JuliaInterpreter", "LibGit2", "LoweredCodeUtils", "OrderedCollections", "Preferences", "REPL", "Serialization", "UUIDs"]
 uuid = "295af30f-e4ad-537b-8983-00126c2a3abe"
-version = "3.17.2"
+version = "3.18.0"
 
 [[deps.SHA]]
 uuid = "ea8e919c-243c-51af-8825-aaa63cd721ce"

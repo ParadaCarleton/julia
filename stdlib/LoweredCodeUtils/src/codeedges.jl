@@ -324,6 +324,10 @@ function direct_links!(cl::CodeLinks, src::CodeInfo)
             end
             rhs = stmt
             target = P(SSAValue(i), cl.ssapreds[i])
+        elseif isexpr(stmt, :call) && isanonymous_typedef(stmt)
+            push!(get!(Vector{Int}, cl.nameassigns, GlobalRef(stmt.args[2]::Module, (stmt.args[3]::QuoteNode).value::Symbol)), i)
+            rhs = stmt
+            target = P(SSAValue(i), cl.ssapreds[i])
         elseif (lhs_rhs = get_lhs_rhs(stmt); lhs_rhs !== nothing)
             # An assignment
             lhs, rhs = lhs_rhs
@@ -765,6 +769,7 @@ function lines_required!(
 
         # Add control-flow
         changed |= add_control_flow!(isrequired, src, cfg, postdomtree)
+        changed |= add_handler_exits!(isrequired, src, edges, norequire)
 
         # So far, everything is generic graph traversal. Now we add some domain-specific information
         changed |= add_typedefs!(isrequired, src, edges, typedefs, norequire)
@@ -900,8 +905,33 @@ function add_control_flow!(isrequired, src::CodeInfo, cfg::CFG, postdomtree)
     return changed[]
 end
 
-is_conditional_terminator(@nospecialize stmt) = stmt isa GotoIfNot ||
-    (@static @isdefined(EnterNode) ? stmt isa EnterNode : isexpr(stmt, :enter))
+is_conditional_terminator(@nospecialize stmt) = stmt isa GotoIfNot || is_enter(stmt)
+
+is_enter(@nospecialize stmt) =
+    @static @isdefined(EnterNode) ? stmt isa EnterNode : isexpr(stmt, :enter)
+
+# A required `EnterNode` enters an exception handler, and possibly a dynamic scope, which
+# only the `:leave`s referencing it exit, so the statements after its `try` block would run
+# within them otherwise. Likewise, the `:pop_exception`s referencing it restore the
+# exception stack after its `catch` block. On Julia 1.10, `:leave`s count the handlers to
+# exit instead of referencing them, so only the `:pop_exception`s are added.
+function add_handler_exits!(isrequired, src::CodeInfo, edges::CodeEdges, norequire)
+    changed = false
+    for idx = 1:length(src.code)
+        stmt = src.code[idx]
+        isrequired[idx] && is_enter(stmt) || continue
+        for succ in edges.succs[idx]
+            isrequired[succ] && continue
+            succ ∈ norequire && continue
+            succstmt = src.code[succ]
+            if isexpr(succstmt, :leave) || isexpr(succstmt, :pop_exception)
+                isrequired[succ] = true
+                changed = true
+            end
+        end
+    end
+    return changed
+end
 
 function is_conditional_block_active(isrequired, bb::BasicBlock, cfg::CFG, postdomtree)
     return visit_𝑰𝑵𝑭𝑳_blocks(bb, cfg, postdomtree) do postdominator::Int, 𝑰𝑵𝑭𝑳::BitSet
@@ -1125,9 +1155,9 @@ function add_typedefs!(
             while i <= length(stmts) && !ismethod3(stmts[i])
                 i += 1
             end
-            if i <= length(stmts) && method_name(stmts[i]::Expr) == false
+            if i <= length(stmts) && method_name(stmts[i]::Expr) in (false, nothing)
                 tpreds = terminal_preds(i, edges)
-                if minimum(tpreds) == idx && i ∉ norequire
+                if minimum(tpreds) == minimum(terminal_preds(idx, edges); init=idx) && i ∉ norequire
                     changed |= !isrequired[i]
                     isrequired[i] = true
                 end

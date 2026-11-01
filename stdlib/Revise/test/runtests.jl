@@ -1282,6 +1282,77 @@ end
         pop!(LOAD_PATH)
     end
 
+    do_test("Retract import shared across files") && isdefined(Base, :delete_binding) &&
+            @testset "Retract import shared across files" begin
+        # An import dropped from one file stays bound while another file still has it.
+        testdir = newtestdir()
+        dn = joinpath(testdir, "SharedImport", "src")
+        mkpath(dn)
+        fn = joinpath(dn, "SharedImport.jl")
+        write(fn, """
+            module SharedImport
+            module Sub
+            export foo, bar
+            foo() = 1
+            bar() = 2
+            module Alt
+            foo() = 3
+            end
+            end
+            include("a.jl")
+            include("b.jl")
+            include("c.jl")
+            end
+            """)
+        write(joinpath(dn, "a.jl"), "using .Sub: foo, bar\nusea() = foo()\n")
+        write(joinpath(dn, "b.jl"), "using .Sub: foo\nuseb() = foo()\n")
+        write(joinpath(dn, "c.jl"), "using .Sub: bar\nusec() = bar()\n")
+        sleep(mtimedelay)
+        @eval using SharedImport
+        sleep(mtimedelay)
+        # Rewriting an import within one file does not parse the package's other files
+        pkgdata = Revise.pkgdatas[Base.PkgId(SharedImport)]
+        write(joinpath(dn, "c.jl"), "using .Sub: bar, foo\nusec() = bar()\n")
+        @yry()
+        @test isempty(Revise.queue_errors)
+        @test SharedImport.useb() == 1
+        @test !Revise.fileinfo(pkgdata, joinpath("src", "b.jl")).parsed[]
+        write(joinpath(dn, "c.jl"), "using .Sub: bar\nusec() = bar()\n")
+        @yry()
+        @test isempty(Revise.queue_errors)
+        @test SharedImport.usea() == 1
+        @test SharedImport.useb() == 1
+        @test !Revise.fileinfo(pkgdata, joinpath("src", "b.jl")).parsed[]  # a.jl keeps `foo`
+        # Drop the import from a revised file
+        write(joinpath(dn, "a.jl"), "usea() = 0\n")
+        @yry()
+        @test isempty(Revise.queue_errors)
+        @test SharedImport.useb() == 1
+        @test SharedImport.usec() == 2
+        # Drop a file's inclusion while another file re-adds the import
+        write(joinpath(dn, "a.jl"), "using .Sub: foo\nusea() = foo()\n")
+        write(fn, replace(read(fn, String), "include(\"b.jl\")\n" => ""))
+        @yry()
+        @test isempty(Revise.queue_errors)
+        @test SharedImport.usea() == 1
+        @test SharedImport.usec() == 2
+        # Switch an import's source across files
+        write(joinpath(dn, "a.jl"), "usea() = foo()\n")
+        write(joinpath(dn, "c.jl"), "using .Sub: bar\nusing .Sub.Alt: foo\nusec() = bar()\n")
+        @yry()
+        @test isempty(Revise.queue_errors)
+        @test SharedImport.usea() == 3
+        # Drop the last inclusion that imports the names
+        write(fn, replace(read(fn, String), "include(\"c.jl\")\n" => ""))
+        @yry()
+        @test isempty(Revise.queue_errors)
+        @test !isdefined(SharedImport, :foo)
+        @test !isdefined(SharedImport, :bar)
+
+        rm_precompile("SharedImport")
+        pop!(LOAD_PATH)
+    end
+
     do_test("Global binding invalidation") && Base.VERSION >= v"1.14.0-DEV" &&
             @testset "Global binding invalidation" begin
         # Julia 1.14 propagates local-inference binding dependencies to compiled callers.
@@ -1628,8 +1699,8 @@ end
             @test MapExprPC.h() == 42        # same file, different transform, into the root
             # Revise recorded each inclusion's transform
             pkgdata = Revise.pkgdatas[Base.PkgId(MapExprPC)]
-            @test Revise.fileinfo(pkgdata, "src/b_pc.jl").mapexpr === MapExprPC.pcbump40
-            @test Revise.fileinfo(pkgdata, "src/MapExprPC.jl").mapexpr === identity
+            @test Revise.fileinfo(pkgdata, joinpath("src", "b_pc.jl")).mapexpr === MapExprPC.pcbump40
+            @test Revise.fileinfo(pkgdata, joinpath("src", "MapExprPC.jl")).mapexpr === identity
             # A file included twice with different transforms revises under each
             sleep(mtimedelay)
             write(joinpath(dn, "c_pc.jl"), "h() = 3\n")
@@ -1642,7 +1713,7 @@ end
             write(joinpath(dn, "MapExprPC.jl"), top_pc("pcbump50"))
             @yry()
             @test MapExprPC.g() == 52
-            idxs = Revise.fileindices(pkgdata, "src/b_pc.jl")
+            idxs = Revise.fileindices(pkgdata, joinpath("src", "b_pc.jl"))
             @test length(idxs) == 1
             @test pkgdata.fileinfos[only(idxs)].mapexpr === MapExprPC.pcbump50
             # ...and later revisions of the file use the new transform
@@ -2218,11 +2289,15 @@ end
         @test !same(Tuple{T,T} where T, Tuple{T,S} where {T,S})
         @test same(Tuple{Vararg{T,N}} where {T,N}, Tuple{Vararg{S,M}} where {S,M})
         @test !same(Tuple{Vararg{Int}}, Tuple{Vararg{Integer}})
+        @test same(Tuple{Type{var"#s1"}} where var"#s1"<:Integer,
+                   Tuple{Type{var"#s2"}} where var"#s2"<:Integer)
+        @test !same(Tuple{Type{Int}}, Tuple{Type{Integer}})
         dn = joinpath(testdir, "UnionAllDocstring", "src")
         mkpath(dn)
         write(joinpath(dn, "UnionAllDocstring.jl"), """
             module UnionAllDocstring
             "f1" f(::AbstractVector{<:Integer}) = 1
+            "g1" g(::Type{<:Integer}) = 1
             end
             """)
         sleep(mtimedelay)
@@ -2230,16 +2305,22 @@ end
         sleep(mtimedelay)
         ds = @doc(UnionAllDocstring.f)
         @test get_docstring(ds) == "f1"
-        for str in ("f2", "f3")
+        ds = @doc(UnionAllDocstring.g)
+        @test get_docstring(ds) == "g1"
+        for i in 2:3
             write(joinpath(dn, "UnionAllDocstring.jl"), """
                 module UnionAllDocstring
-                "$str" f(::AbstractVector{<:Integer}) = 1
+                "f$i" f(::AbstractVector{<:Integer}) = 1
+                "g$i" g(::Type{<:Integer}) = 1
                 end
                 """)
             @yry()
             ds = @doc(UnionAllDocstring.f)
-            @test get_docstring(ds) == str
+            @test get_docstring(ds) == "f$i"
             @test length(Base.Docs.meta(UnionAllDocstring)[Base.Docs.Binding(UnionAllDocstring, :f)].docs) == 1
+            ds = @doc(UnionAllDocstring.g)
+            @test get_docstring(ds) == "g$i"
+            @test length(Base.Docs.meta(UnionAllDocstring)[Base.Docs.Binding(UnionAllDocstring, :g)].docs) == 1
         end
 
         rm_precompile("UnionAllDocstring")
@@ -2320,6 +2401,61 @@ end
 
         rm_precompile("NewDocBinding")
         pop!(LOAD_PATH)
+    end
+
+    if Revise.__bpart__[] && do_test("Struct redefinition plus new struct")
+        @testset "Struct redefinition plus new struct" begin
+            # Re-evaluating code that depends on a redefined struct must not read
+            # the binding of a struct added in the same revision at the
+            # pre-revision world (a backdated-const access, reported with
+            # "access to binding ... in a world prior to its definition world").
+            testdir = newtestdir()
+            dn = joinpath(testdir, "RedefPlusNew", "src")
+            mkpath(dn)
+            write(joinpath(dn, "RedefPlusNew.jl"), """
+                module RedefPlusNew
+                struct Est
+                    a::Float64
+                end
+                f(e::Est) = e.a
+                end
+                """)
+            sleep(mtimedelay)
+            @eval using RedefPlusNew
+            sleep(mtimedelay)
+            @test RedefPlusNew.f(RedefPlusNew.Est(1.0)) == 1.0
+            write(joinpath(dn, "RedefPlusNew.jl"), """
+                module RedefPlusNew
+                abstract type AbstractEst end
+                struct Est <: AbstractEst
+                    a::Float64
+                end
+                f(e::Est) = e.a
+                struct Grp{T}
+                    a::T
+                end
+                g(x::Grp) = x.a
+                end
+                """)
+            errfile, errio = mktemp()
+            try
+                redirect_stderr(errio) do
+                    yry()
+                end
+            finally
+                close(errio)
+            end
+            @latestworld
+            stderrtxt = read(errfile, String)
+            rm(errfile; force=true)
+            @test !occursin("world prior to its definition world", stderrtxt)
+            @test RedefPlusNew.Est <: RedefPlusNew.AbstractEst
+            @test RedefPlusNew.f(RedefPlusNew.Est(2.0)) == 2.0
+            @test RedefPlusNew.g(RedefPlusNew.Grp(3.0)) == 3.0
+
+            rm_precompile("RedefPlusNew")
+            pop!(LOAD_PATH)
+        end
     end
 
     do_test("doc expr signature") && @testset "Docstring attached to signatures" begin
@@ -2739,7 +2875,7 @@ end
         io = IOBuffer()
         if isdefined(Base, :methodloc_callback)
             print(io, methods(triggered))
-            @test occursin(filename * ":1", String(take!(io)))
+            @test occursin(basename(filename * ":1"), String(take!(io)))
         end
         write(filename, """
             # A comment to change the line numbers
@@ -3104,6 +3240,46 @@ end
         @test_throws MethodError MethDel.firstparam(rand(2,2))
 
         Base.delete_method(first(methods(Base.revisefoo)))
+    end
+
+    do_test("Module-local eval") && isdefined(Core, :EvalInto) && @testset "Module-local eval" begin
+        testdir = newtestdir()
+        dn = joinpath(testdir, "LocalEval", "src")
+        mkpath(dn)
+        write(joinpath(dn, "LocalEval.jl"), """
+            __precompile__(false)
+            module LocalEval
+            for T in (Int, Float64)
+                eval(:(localeval(::\$T) = \$T))
+            end
+            end
+            """)
+        sleep(mtimedelay)
+        @eval using LocalEval
+        sleep(mtimedelay)
+        @test LocalEval.localeval(1) === Int
+        @test LocalEval.localeval(1.0) === Float64
+        @test isa(definition(@which LocalEval.localeval(1.0)), Expr)
+        write(joinpath(dn, "LocalEval.jl"), """
+            __precompile__(false)
+            module LocalEval
+            for T in (Int,)
+                eval(:(localeval(::\$T) = \$T))
+            end
+            end
+            """)
+        @yry()
+        @test LocalEval.localeval(1) === Int
+        @test_throws MethodError LocalEval.localeval(1.0)
+
+        # `eval` of a non-expression has nothing to intercept
+        mod = private_module()
+        Core.eval(mod, :(const evalsym = 1))
+        for ex in (:(evalcopy1 = eval(:evalsym)), :(evalcopy2 = Core.eval(@__MODULE__, :evalsym)))
+            Revise.methods_by_execution(mod, ex)
+        end
+        @test (@invokelatest mod.evalcopy1) == 1
+        @test (@invokelatest mod.evalcopy2) == 1
     end
 
     do_test("Method deletion specificity") && @testset "Method deletion specificity" begin
@@ -3939,6 +4115,91 @@ end
             """)
         includet_quiet(file)
         @test r954(1) == 1
+    end
+
+    do_test("rethrow_errors") && @testset "rethrow_errors" begin
+        @test Revise.rethrow_errors[] == false
+        rlogger = Revise.debug_logger()
+        empty!(rlogger.logs)
+        testdir = newtestdir()
+        dn = joinpath(testdir, "RethrowErrors", "src")
+        mkpath(dn)
+        fn = joinpath(dn, "RethrowErrors.jl")
+        write(fn, """
+            module RethrowErrors
+            include("types.jl")
+            f() = 1
+            end
+            """)
+        write(joinpath(dn, "types.jl"), "# a comment")
+        sleep(mtimedelay)
+        @eval using RethrowErrors
+        sleep(mtimedelay)
+        badsrc(fval) = """
+            module RethrowErrors
+            include("types.jl")
+            f() = $fval
+            struct Bad
+                x::UndefinedTypeRethrowErrors
+            end
+            end
+            """
+        try
+            # Off: the error is recorded and the rest of the file is revised.
+            write(fn, badsrc(2))
+            @test_logs (:error, r"Failed to revise.*RethrowErrors\.jl") (:warn, r"The running code does not match the saved version") match_mode=:any yry()
+            @test @invokelatest(RethrowErrors.f()) == 2
+            err, _ = Revise.queue_errors[(Revise.pkgdatas[Base.PkgId(RethrowErrors)], joinpath("src", "RethrowErrors.jl"))]
+            @test occursin("UndefinedTypeRethrowErrors", sprint(showerror, err))
+            recs = filter(r -> r.group == "Error" && r.message == "EvalFailed", rlogger.logs)
+            @test !isempty(recs)
+            @test last(recs).kwargs[:exception][1] === err
+
+            # On: the same failure is thrown from `revise`, with its original backtrace.
+            Revise.rethrow_errors[] = true
+            write(fn, badsrc(3))
+            @test timedwait(() -> !isempty(Revise.revision_queue), event_timeout; pollint=0.02) === :ok
+            sleep(0.02)
+            ex = try
+                revise()
+                nothing
+            catch e
+                e
+            end
+            @test ex isa CapturedException
+            @test occursin("UndefinedTypeRethrowErrors", sprint(showerror, ex))
+            @test any(((sf, _),) -> sf.func === :evaluate_entry!, ex.processed_bt)
+            # Successful expressions are applied, as they are with the switch off.
+            @test @invokelatest(RethrowErrors.f()) == 3
+            @test_throws "UndefinedTypeRethrowErrors" revise()
+
+            # A failure that a later retry round resolves does not throw. The root file
+            # is evaluated before "types.jl", so `g` fails in the first round.
+            empty!(rlogger.logs)
+            write(fn, """
+                module RethrowErrors
+                include("types.jl")
+                f() = 4
+                g(::Ord) = 1
+                end
+                """)
+            write(joinpath(dn, "types.jl"), "struct Ord end")
+            # The root file is still queued from the failures above, so wait for
+            # "types.jl" specifically: both files must be revised in the same pass.
+            @test timedwait(() -> any(((_, file),) -> file == joinpath("src", "types.jl"), Revise.revision_queue),
+                            event_timeout; pollint=0.02) === :ok
+            sleep(0.02)
+            revise()
+            @test isempty(Revise.queue_errors)
+            @test @invokelatest(RethrowErrors.g(@invokelatest(RethrowErrors.Ord()))) == 1
+            @test any(r -> r.group == "Error" && r.message == "EvalFailed", rlogger.logs)
+        finally
+            Revise.rethrow_errors[] = false
+            Revise.debug_logger(; min_level=Info)
+            empty!(Revise.queue_errors)
+            rm_precompile("RethrowErrors")
+            pop!(LOAD_PATH)
+        end
     end
 
     do_test("Retry on InterruptException") && @testset "Retry on InterruptException" begin
@@ -5537,6 +5798,70 @@ end
         pop!(LOAD_PATH)
     end
 
+    do_test("Distributed") && Base.VERSION >= v"1.12.0-DEV.2047" && @testset "Distributed revised type parameter bound" begin
+        # Revising a struct must also re-evaluate, on the workers, the type whose
+        # type-parameter bound names it (`Finalise{R <: Progress}`) and the methods
+        # that construct it, and delete the methods that construct the old type.
+        newproc = only(addprocs(1))
+        Revise.init_worker(newproc)
+        dirname = randtmp()
+        mkdir(dirname)
+        @everywhere push_LOAD_PATH!(dirname) = push!(LOAD_PATH, dirname)
+        for p in (myid(), newproc)
+            remotecall_wait(push_LOAD_PATH!, p, dirname)
+        end
+        push!(to_remove, dirname)
+        modname = "ReviseDistributedBound"
+        dn = joinpath(dirname, modname, "src")
+        mkpath(dn)
+        write(joinpath(dn, modname*".jl"), """
+            module ReviseDistributedBound
+            struct Progress{T}
+                a::T
+            end
+            struct Finalise{R <: Progress, A}
+                progress::R
+                accept::A
+            end
+            make(x) = Finalise(Progress(x), 2)
+            end
+            """)
+        sleep(mtimedelay)
+        using ReviseDistributedBound
+        sleep(mtimedelay)
+        @everywhere using ReviseDistributedBound
+        @test !hasfield(typeof(remotecall_fetch(ReviseDistributedBound.make, newproc, 1.0f0).progress), :b)
+        old_finalise = ReviseDistributedBound.Finalise
+        Distributed.remotecall_eval(Main, newproc, :(global old_finalise = ReviseDistributedBound.Finalise))
+        # Revising while the worker is blocked must not wait for the worker; the worker
+        # applies the revision once it is free.
+        busy = 15.0
+        t0 = time()
+        remotecall(Libc.systemsleep, newproc, busy)
+        write(joinpath(dn, modname*".jl"), """
+            module ReviseDistributedBound
+            struct Progress{T}
+                a::T
+                b::T
+            end
+            struct Finalise{R <: Progress, A}
+                progress::R
+                accept::A
+            end
+            make(x) = Finalise(Progress(x, x), 2)
+            end
+            """)
+        @yry()
+        @test time() - t0 < busy
+        @test ReviseDistributedBound.make(1.0f0).progress.b == 1.0f0
+        @test remotecall_fetch(ReviseDistributedBound.make, newproc, 1.0f0).progress.b == 1.0f0
+        @test isempty(methods(old_finalise))
+        @test Distributed.remotecall_eval(Main, newproc, :(length(methods(old_finalise)))) == 0
+        rmprocs(newproc; waitfor=10)
+        rm_precompile("ReviseDistributedBound")
+        pop!(LOAD_PATH)
+    end
+
     do_test("Distributed on worker") && @testset "Distributed on worker" begin
         # https://github.com/timholy/Revise.jl/pull/527
         favorite_proc, boring_proc = addprocs(2)
@@ -6176,6 +6501,75 @@ do_test("Switching free/dev") && @testset "Switching free/dev" begin
     push!(to_remove, depot)
 end
 
+do_test("New extensions") && @testset "New extensions" begin
+    depot = mktempdir()
+    old_depots = copy(DEPOT_PATH)
+    empty!(DEPOT_PATH)
+    push!(DEPOT_PATH, depot)
+    old_project = Base.ACTIVE_PROJECT[]
+    Base.ACTIVE_PROJECT[] = joinpath(depot, "environments", "v$(VERSION.major).$(VERSION.minor)", "Project.toml")
+    mkpath(dirname(Base.ACTIVE_PROJECT[]))
+    write(Base.ACTIVE_PROJECT[], "[deps]")
+    names = ("NewExtParent", "NewExtTrigA", "NewExtTrigB")
+    cd(depot) do
+        foreach(Pkg.generate, names)
+    end
+    parentpath = joinpath(depot, "NewExtParent")
+    write(joinpath(parentpath, "src", "NewExtParent.jl"), """
+        module NewExtParent
+        function f end
+        end
+        """)
+    for name in names[2:end]
+        write(joinpath(depot, name, "src", "$name.jl"), """
+            module $name
+            struct T end
+            end
+            """)
+    end
+    Pkg.develop([PackageSpec(path=joinpath(depot, name)) for name in names])
+    sleep(mtimedelay)
+    @eval using NewExtParent, NewExtTrigA
+    sleep(mtimedelay)
+
+    # Declare an extension whose trigger is already loaded and one whose trigger is not
+    uuid(name) = Pkg.Types.read_project(joinpath(depot, name, "Project.toml")).uuid
+    open(joinpath(parentpath, "Project.toml"), "a") do io
+        write(io, """
+
+            [weakdeps]
+            NewExtTrigA = "$(uuid("NewExtTrigA"))"
+            NewExtTrigB = "$(uuid("NewExtTrigB"))"
+
+            [extensions]
+            NewExtA = "NewExtTrigA"
+            NewExtB = "NewExtTrigB"
+            """)
+    end
+    mkpath(joinpath(parentpath, "ext"))
+    for (ext, trigger) in ("NewExtA" => "NewExtTrigA", "NewExtB" => "NewExtTrigB")
+        write(joinpath(parentpath, "ext", "$ext.jl"), """
+            module $ext
+            using NewExtParent, $trigger
+            NewExtParent.f(::$trigger.T) = $(repr(ext))
+            end
+            """)
+    end
+    Pkg.resolve()
+    @test timedwait(() -> Revise.extensions_stale[], event_timeout) === :ok
+    revise()
+    @test Base.invokelatest(NewExtParent.f, NewExtTrigA.T()) == "NewExtA"
+    @test Base.get_extension(NewExtParent, :NewExtB) === nothing
+    @eval using NewExtTrigB
+    @test Base.invokelatest(NewExtParent.f, NewExtTrigB.T()) == "NewExtB"
+
+    empty!(DEPOT_PATH)
+    append!(DEPOT_PATH, old_depots)
+    Base.ACTIVE_PROJECT[] = old_project
+
+    push!(to_remove, depot)
+end
+
 do_test("pkgversion update") && @testset "pkgversion update" begin
     # issue #684: Julia caches a package's version in `Base.pkgorigins` at load
     # time (and on 1.12+ `pkgversion` returns that cached value). When developing
@@ -6259,6 +6653,15 @@ do_test("Manifest re-extraction errors") && @testset "Manifest re-extraction err
     # Debugging and non-`:sigs` modes preserve their original exception behavior.
     @test_throws ErrorException Revise.instantiate_sigs!(mkfi().mod_exs_infos; always_rethrow=true)
     @test_throws Revise.ReviseEvalException Revise.instantiate_sigs!(mkfi().mod_exs_infos; mode=:eval)
+    # `rethrow_errors` acts like `always_rethrow=true`, including in the resilient helper.
+    try
+        Revise.rethrow_errors[] = true
+        @test_throws "issue 706 sigs failure" Revise.instantiate_sigs!(mkfi().mod_exs_infos)
+        @test_throws ErrorException Revise.maybe_extract_sigs_or_queue_error!(pkgdata, file, mkfi())
+        @test !haskey(Revise.queue_errors, (pkgdata, file))
+    finally
+        Revise.rethrow_errors[] = false
+    end
 
     # The resilient helper records the contextual error instead of throwing.
     @test (Revise.maybe_extract_sigs_or_queue_error!(pkgdata, file, mkfi()); true)
