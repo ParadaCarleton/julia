@@ -296,6 +296,7 @@ void jl_init_common_symbols(void)
     jl_force_compile_sym = jl_symbol("force_compile");
     jl_infer_sym = jl_symbol("infer");
     jl_max_methods_sym = jl_symbol("max_methods");
+    jl_strict_sym = jl_symbol("strict");
     jl_macrocall_sym = jl_symbol("macrocall");
     jl_escape_sym = jl_symbol("escape");
     jl_hygienicscope_sym = jl_symbol("hygienic-scope");
