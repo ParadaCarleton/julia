@@ -82,7 +82,7 @@ version = "1.11.0"
 [[deps.JuliaInterpreter]]
 deps = ["CodeTracking", "InteractiveUtils", "Random"]
 uuid = "aa1ae85d-cabe-5617-a682-6adf51b2e16a"
-version = "0.12.2"
+version = "0.12.3"
 
 [[deps.JuliaSyntaxHighlighting]]
 deps = ["StyledStrings"]
