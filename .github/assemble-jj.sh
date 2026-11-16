@@ -9,6 +9,8 @@ ci=1.13/fork/ci
 fail() { echo "::error::$*"; exit 1; }
 rev() { jj log --no-graph -r "$1" -T 'commit_id ++ "\n"'; }
 
+# The default immutable set holds master, whose history contains the CI commits this script rewrites.
+jj config set --repo 'revset-aliases."immutable_heads()"' 'root()'
 jj git remote add upstream https://github.com/JuliaLang/julia.git 2>/dev/null || true
 jj git fetch --remote "$remote"
 jj git fetch --remote upstream --tag 'v*'
@@ -28,6 +30,8 @@ if [ "$release" != "$latest" ]; then
     allowed="::($CI | main"
     for name in "${features[@]}"; do allowed+=" | \"$name\""; done
     allowed+=")"
+    # Backup bookmarks (backup/*) keep old histories on purpose; the rebase may rewrite them locally and nothing pushes them.
+    allowed="($allowed | ::(bookmarks(glob:'backup/*') | remote_bookmarks(glob:'backup/*')))"
     stray=$(rev "descendants($stack) ~ $allowed")
     if [ -n "$stray" ]; then fail "commits built on $ci would move with it: $stray"; fi
     jj rebase -s "$stack" -d "$latest"
@@ -37,7 +41,7 @@ fi
 for name in "${features[@]}"; do
     if [ -z "$(rev "\"$name\" & $CI::")" ]; then jj rebase -b "\"$name\"" -d "$CI"; fi
 done
-conflicted=$(jj log --no-graph -r 'conflicts()' -T 'bookmarks ++ " " ++ description.first_line() ++ "\n"')
+conflicted=$(jj log --no-graph -r "conflicts() & ::($CI | main$(printf ' | "%s"' "${features[@]}"))" -T 'bookmarks ++ " " ++ description.first_line() ++ "\n"')
 if [ -n "$conflicted" ]; then fail "conflicts after restacking: $conflicted"; fi
 
 parents=("$CI")
