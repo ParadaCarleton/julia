@@ -1352,7 +1352,11 @@ static void jl_resolve_sysimg_location(JL_IMAGE_SEARCH rel, const char* julia_bi
         uv_fs_t req;
         int exists = uv_fs_stat(NULL, &req, unresolved, NULL) == 0;
         uv_fs_req_cleanup(&req);
-        if (!exists || strcmp(unresolved_real, jl_options.tracked_path) == 0)
+        // an empty `@` has no realpath, so its fallback ends in `/`
+        size_t tracked_len = strlen(jl_options.tracked_path);
+        while (tracked_len > 1 && jl_options.tracked_path[tracked_len - 1] == '/')
+            tracked_len--;
+        if (!exists || (strlen(unresolved_real) == tracked_len && strncmp(unresolved_real, jl_options.tracked_path, tracked_len) == 0))
             jl_tracked_path_unresolved = unresolved;
         else
             free(unresolved);

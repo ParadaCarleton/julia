@@ -668,6 +668,9 @@ let exename = `$(Base.julia_cmd()) --startup-file=no --color=no`
                 # a child started with `julia_cmd` tracks the path as given, symlinks included
                 forwarded = readchomp(`$cov_exename --code-coverage=@$link -e 'print(Base.julia_cmd())'`)
                 @test occursin("--code-coverage=@$link", forwarded)
+                # a bare `@` tracks the working directory, whose realpath ends in `/`
+                forwarded = cd(() -> readchomp(`$cov_exename --code-coverage=@ -e 'print(Base.julia_cmd())'`), real)
+                @test occursin("--code-coverage=@$real", forwarded)
             end
         end
 
