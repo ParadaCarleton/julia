@@ -5,3 +5,4 @@
 # its test/errorshow.jl changes sit on top of the abbreviated-traces ones
 1.13/feature/kwargs-by-name 1.13/feature/abbreviated-traces
 1.13/feature/compile-bytes
+1.13/fix/append-edges-hash
