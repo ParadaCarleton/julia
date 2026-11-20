@@ -6784,4 +6784,61 @@ const SPLAT_SVEC_NAMES = ntuple(i -> Symbol(:a, i), 33)
 splat_svec_caller(vals) = splat_svec_outer(SPLAT_SVEC_NAMES, vals)
 @test Base.infer_return_type(splat_svec_caller, (NTuple{33,Int},)) === NamedTuple{SPLAT_SVEC_NAMES, NTuple{33,Int}}
 
+# `append_edges!` de-dups edge records by identity hash; it must agree with a linear scan.
+@testset "append_edges! agrees with linear-scan de-dup" begin
+    function append_edges_scan!(edges::Vector{Any}, from)
+        singles = Base.IdSet{Any}()
+        multis = Int[]
+        i = 1
+        while i <= length(edges)
+            n = Compiler.edge_record_length(edges, i)
+            n == 1 ? push!(singles, edges[i]) : push!(multis, i)
+            i += n
+        end
+        i = 1
+        while i <= length(from)
+            n = Compiler.edge_record_length(from, i)
+            if n == 1
+                if !(from[i] in singles)
+                    push!(singles, from[i])
+                    push!(edges, from[i])
+                end
+            elseif !any(j -> Compiler.edge_record_length(edges, j) == n && all(k -> edges[j+k] === from[i+k], 0:n-1), multis)
+                push!(multis, length(edges) + 1)
+                for k = 0:n-1
+                    push!(edges, from[i+k])
+                end
+            end
+            i += n
+        end
+        return edges
+    end
+    pool = Any[m for m in Iterators.take(methods(+), 6)]
+    sigs = Any[Tuple{Int}, Tuple{Float64}, Tuple{Any,Int}, Tuple{String}]
+    function rand_records(rng, nrec)
+        out = Any[]
+        for _ in 1:nrec
+            kind = rand(rng, 1:3)
+            if kind == 1
+                push!(out, rand(rng, pool))
+            elseif kind == 2
+                push!(out, rand(rng, sigs), rand(rng, pool))
+            else
+                nm = rand(rng, 1:3)
+                push!(out, nm, rand(rng, sigs))
+                for _ in 1:nm
+                    push!(out, rand(rng, pool))
+                end
+            end
+        end
+        return out
+    end
+    rng = Random.MersenneTwister(0x1357)
+    for _ in 1:500
+        edges = rand_records(rng, rand(rng, 0:12))
+        from = rand_records(rng, rand(rng, 0:12))
+        @test Compiler.append_edges!(copy(edges), from) == append_edges_scan!(copy(edges), from)
+    end
+end
+
 end # module inference
