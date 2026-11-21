@@ -7,3 +7,4 @@
 1.13/feature/compile-bytes
 1.13/fix/append-edges-hash
 1.13/fix/callsig-bailout
+1.13/fix/short-circuit-narrowing
