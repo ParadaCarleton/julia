@@ -842,14 +842,23 @@ function edge_record_length(edges, i::Int)
     return 2 # invokesig or atype, followed by its target or `Core.methodtable`
 end
 
+# Identity hash of the `n` items of the record at `v[i]`; `objectid` agrees with `===`.
+function edge_record_key(v, i::Int, n::Int)
+    key = UInt(n)
+    for k in 0:n-1
+        key = (key ⊻ objectid(v[i+k])) * 0x00000100000001b3
+    end
+    return key
+end
+
 # Append the edge records of `from` that `edges` does not have yet.
 function append_edges!(edges::Vector{Any}, from)
     singles = IdSet{Any}()
-    multis = Int[]
+    multis = IdDict{UInt,Vector{Int}}()
     i = 1
     while i <= length(edges)
         n = edge_record_length(edges, i)
-        n == 1 ? push!(singles, edges[i]) : push!(multis, i)
+        n == 1 ? push!(singles, edges[i]) : push!(get!(Vector{Int}, multis, edge_record_key(edges, i, n)), i)
         i += n
     end
     i = 1
@@ -860,12 +869,15 @@ function append_edges!(edges::Vector{Any}, from)
                 push!(singles, from[i])
                 push!(edges, from[i])
             end
-        elseif !any(multis) do j
-                    edge_record_length(edges, j) == n && all(k -> edges[j+k] === from[i+k], 0:n-1)
+        else
+            starts = get!(Vector{Int}, multis, edge_record_key(from, i, n))
+            if !any(starts) do j
+                        edge_record_length(edges, j) == n && all(k -> edges[j+k] === from[i+k], 0:n-1)
+                    end
+                push!(starts, length(edges) + 1)
+                for k = 0:n-1
+                    push!(edges, from[i+k])
                 end
-            push!(multis, length(edges) + 1)
-            for k = 0:n-1
-                push!(edges, from[i+k])
             end
         end
         i += n

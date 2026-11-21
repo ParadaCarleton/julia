@@ -1605,3 +1605,236 @@ end
     @test occursin("This hint caught my concrete exception type", exc_print)
     @test occursin("This other hint caught my abstract exception supertype", exc_print)
 end
+
+module AbbreviatedTraces
+    # inlined frames print without argument types, which the checks below match on
+    @noinline outer(x) = inner(x)
+    @noinline inner(x) = sum([1, 2, 3]; dims = x)
+end
+
+@testset "abbreviated stacktraces" begin
+    trace = try
+        AbbreviatedTraces.outer("not a dimension")
+    catch
+        Base.process_backtrace(stacktrace(catch_backtrace()))
+    end
+
+    function render(io::IO, shown = trace)
+        Base.show_backtrace(io, shown)
+        return String(take!(io.io))
+    end
+    hidden = Ref(false)
+    abbreviated = render(IOContext(IOBuffer(), :stacktrace_frames_hidden => hidden))
+    full = render(IOContext(IOBuffer()))
+
+    @test hidden[]
+    @test occursin("⋮ internal", abbreviated)
+    @test occursin("Base", abbreviated)
+    @test !occursin("⋮", full)
+
+    # the frames the user wrote stay, and keep the numbers they have in the full trace
+    for frame in ("inner(x::String)", "outer(x::String)")
+        @test occursin(frame, abbreviated)
+        @test match(Regex("\\[(\\d+)\\] \\Q$frame\\E"), abbreviated)[1] ==
+              match(Regex("\\[(\\d+)\\] \\Q$frame\\E"), full)[1]
+    end
+
+    # the frame a run of user code called into names what rejected the call
+    @test occursin(r"\[\d+\] sum\b", abbreviated)
+    # while the frames below it, which are Base's own business, are gone
+    @test occursin("reduced_indices", full)
+    @test !occursin("reduced_indices", abbreviated)
+    @test count("\n", abbreviated) < count("\n", full)
+
+    # a trace with nothing of the user's in it is shown whole
+    internal = Any[entry for entry in trace if Base._is_julia_source(string(entry[1].file))]
+    all_internal = Ref(false)
+    whole = render(IOContext(IOBuffer(), :stacktrace_frames_hidden => all_internal), internal)
+    @test !all_internal[]
+    @test !occursin("⋮", whole)
+
+    function locations(flags...)
+        found = Tuple{String, Int}[]
+        render(IOContext(IOBuffer(), :last_shown_line_infos => found, flags...))
+        return found
+    end
+    # the REPL's editor shortcut finds a frame by the number the full trace gives it
+    @test locations(:stacktrace_frames_hidden => hidden) == locations() ==
+          [(string(entry[1].file), entry[1].line) for entry in trace]
+
+    # asking for abbreviation outright needs no flag to carry the request
+    withenv("JULIA_STACKTRACE_ABBREVIATED" => "true") do
+        @test occursin("⋮ internal", render(IOContext(IOBuffer())))
+    end
+end
+
+@testset "frames of Julia's own code are told apart from a user's" begin
+    @test Base._is_julia_source("array.jl")
+    @test Base._is_julia_source(joinpath(Sys.STDLIB, "Random", "src", "misc.jl"))
+    # the REPL's pseudo-files and code passed to `-e` carry no extension
+    @test !Base._is_julia_source("REPL[1]")
+    @test !Base._is_julia_source("none")
+    @test !Base._is_julia_source(@__FILE__)
+    # `include_string` names a file relative to nothing, which Base's own do not share
+    @test Base._is_julia_source("./array.jl")
+    @test !Base._is_julia_source("user_code.jl")
+    # and may even reuse a Base file name, which the frame's module then tells apart
+    reused = Module()
+    include_string(reused, "@noinline g() = error(\"g\")", "array.jl")
+    frames = try
+        Base.invokelatest(reused.g)
+    catch
+        stacktrace(catch_backtrace())
+    end
+    user = frames[findfirst(frame -> frame.func === :g, frames)]
+    @test Base._is_julia_source(string(user.file)) && !Base._is_julia_source(user)
+    @test Base._is_julia_source(frames[findfirst(frame -> frame.func === :error, frames)])
+    # Julia's test suite and a depot living beside its sources are not Julia's own code
+    sharedir = abspath(Sys.BINDIR, Base.DATAROOTDIR, "julia")
+    @test !Base._is_julia_source(joinpath(sharedir, "test", "errorshow.jl"))
+    @test !Base._is_julia_source(joinpath(sharedir, "dev", "Example", "src", "Example.jl"))
+    @test Base._is_julia_source(joinpath(sharedir, "base", "array.jl"))
+    @test !Base._is_julia_source(joinpath(sharedir, "stdlib-extras", "x.jl"))
+    for depot in DEPOT_PATH
+        @test Base._is_julia_source(joinpath(depot, "packages", "Pkg", "src", "Pkg.jl"))
+        # a package checked out for development is the user's own code
+        @test !Base._is_julia_source(joinpath(depot, "dev", "Example", "src", "Example.jl"))
+    end
+    saved = copy(DEPOT_PATH)
+    try
+        copy!(DEPOT_PATH, ["relative-depot"])
+        @test Base._is_julia_source(abspath("relative-depot", "packages", "Pkg", "src", "Pkg.jl"))
+    finally
+        copy!(DEPOT_PATH, saved)
+    end
+end
+
+module RecursiveTraces
+    descend(depth) = depth == 0 ? error("bottom") : only(map(descend, [depth - 1]))
+end
+
+@testset "abbreviated stacktraces inside a repeated cycle" begin
+    trace = try
+        RecursiveTraces.descend(30)
+    catch
+        Base.process_backtrace(stacktrace(catch_backtrace()))
+    end
+    render(io::IO) = (Base.show_backtrace(io, trace); String(take!(io.io)))
+    full = render(IOContext(IOBuffer()))
+    abbreviated = render(IOContext(IOBuffer(), :stacktrace_frames_hidden => Ref(false)))
+
+    # the recursion is still bracketed once, and Base's frames inside it are hidden
+    @test count("┌", abbreviated) == count("╰", abbreviated) == 1
+    @test occursin("repeated 30 times", abbreviated)
+    @test occursin(r"│ +⋮ internal @ Base", abbreviated)
+    @test count("\n", abbreviated) < count("\n", full)
+    numbers(text) = [m[1] for m in eachmatch(r"\[(\d+)\] descend", text)]
+    @test !isempty(numbers(abbreviated)) && numbers(abbreviated) ⊆ numbers(full)
+
+    # a run of hidden frames that a cycle opens or closes on carries the bracket itself
+    entry(name, file) = (Base.StackFrame(name, Symbol(file), 1), 1)
+    synthetic = Any[entry(:u1, "/user/a.jl"), entry(:b2, "b.jl"), entry(:b3, "b.jl"),
+                    entry(:u4, "/user/a.jl"), entry(:b5, "b.jl")]
+    function shown(cycles, kept)
+        io = IOBuffer()
+        Base.show_processed_backtrace(io, synthetic, 20, copy(cycles), 1; print_linebreaks = false, kept)
+        return String(take!(io))
+    end
+    kept = [true, false, false, true, false]
+    opening = shown([(2, 3, 5)], kept)
+    @test occursin(r"┌ +⋮ internal", opening)
+    @test occursin("[4] u4", opening) && occursin("[4] u4", shown([(2, 3, 5)], nothing))
+    closing = shown([(1, 2, 5)], kept)
+    @test occursin(r"│ +⋮ internal\n ╰", closing)
+    @test occursin("[12] u4", closing) && occursin("[12] u4", shown([(1, 2, 5)], nothing))
+
+    # a hidden frame repeating inside a cycle keeps the numbers of the frames after the cycle
+    repeating = Any[entry(:u1, "/user/a.jl"), (Base.StackFrame(:b2, :b_file, 1), 3),
+                    entry(:u3, "/user/a.jl"), entry(:u4, "/user/a.jl")]
+    function shown_repeating(kept)
+        io = IOBuffer()
+        Base.show_processed_backtrace(io, repeating, 99, [(1, 3, 5)], 1; print_linebreaks = false, kept)
+        return String(take!(io))
+    end
+    @test occursin("[26] u4", shown_repeating(nothing))
+    @test occursin("[26] u4", shown_repeating([true, false, true, true]))
+end
+
+module KeywordSuggestions
+    struct Marker end
+    scaled(x; scale = 1) = x * scale
+    pair(x, y) = (x, y)
+    slurpy(x::Marker; kws...) = (x, kws)
+    unnamed(::Int, y) = y
+    overloaded(x::Integer; scale = 1) = x * scale
+    overloaded(x::AbstractString; kws...) = (x, kws)
+end
+
+@testset "keyword argument suggestions" begin
+    @test occursin("did you mean `scale`?",
+                   sprint(showerror, try KeywordSuggestions.scaled(2; scal = 5) catch err; err end))
+
+    # a name resembling nothing on offer draws no suggestion
+    @test !occursin("did you mean",
+                    sprint(showerror, try KeywordSuggestions.scaled(2; bogus = 5) catch err; err end))
+
+    # positional parameters are nameable, so their names are offered too
+    @test occursin("did you mean `x`?",
+                   sprint(showerror, try KeywordSuggestions.pair(xx = 1, y = 2) catch err; err end))
+
+    # a method slurping keywords accepts every name, so none of them is misspelled
+    @test !occursin("did you mean",
+                    sprint(showerror, try KeywordSuggestions.slurpy(1; scal = 1) catch err; err end))
+
+    # `sort` forwards its slurped keywords, so the error names `sort!`, which declares each one
+    @test occursin("did you mean `lt`?",
+                   sprint(showerror, try sort([2, 1]; ltt = <) catch err; err end))
+
+    # a slurped `kwargs...` is not a keyword name
+    @test issetequal(Base.nameable_keywords(KeywordSuggestions.scaled), [:scale, :x])
+    @test Base.nameable_keywords(KeywordSuggestions.slurpy) == [:x]
+    # an unnamed parameter cannot be passed by name, so no placeholder is offered
+    @test Base.nameable_keywords(KeywordSuggestions.unnamed) == [:y]
+    @test !Base.accepts_any_keyword(KeywordSuggestions.scaled)
+    @test Base.accepts_any_keyword(KeywordSuggestions.slurpy)
+
+    # an overload the positional arguments cannot reach neither silences nor supplies names
+    @test occursin("did you mean `scale`?",
+                   sprint(showerror, try KeywordSuggestions.overloaded(1; scal = 2) catch err; err end))
+    @test !Base.accepts_any_keyword(KeywordSuggestions.overloaded, Tuple{Int})
+
+    @test Base.closest_name(:abcd, [:abcd]) === nothing
+    @test Base.closest_name(:abcd, [:abce, :abcd, :abdd]) === :abce
+    # a name far longer than every candidate resembles none of them
+    @test Base.closest_name(Symbol("a"^200), [:a, :aa]) === nothing
+end
+
+module UndefVarSuggestions
+    thing_one = 1
+end
+
+module UndefVarExporter
+    export exported_thing
+    exported_thing = 1
+end
+
+module UndefVarUsings
+    using ..UndefVarExporter
+end
+
+@testset "undefined variable suggestions" begin
+    @test occursin("Did you mean `thing_one`?",
+                   sprint(showerror, try UndefVarSuggestions.thing_two catch err; err end))
+
+    # a name resembling nothing in scope draws no suggestion
+    @test !occursin("Did you mean",
+                    sprint(showerror, try UndefVarSuggestions.zzqqxxvvwwyy catch err; err end))
+
+    # names exported by Base need no qualification, so they are offered too
+    @test occursin("Did you mean `isnothing`?",
+                   sprint(showerror, try UndefVarSuggestions.isnohting catch err; err end))
+
+    # names exported by a `using` module need no qualification either
+    @test occursin("Did you mean `exported_thing`?",
+                   sprint(showerror, try UndefVarUsings.exported_thin catch err; err end))
+end

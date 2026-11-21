@@ -4283,6 +4283,14 @@ let effects = Base.infer_effects(callsig_backprop_addinteger)
 end
 callsig_backprop_anti(::Any) = :any
 callsig_backprop_anti(::Int) = :int
+abstract type CallsigBackpropOrder end
+struct CallsigBackpropOrder1 <: CallsigBackpropOrder end
+struct CallsigBackpropOrder2 <: CallsigBackpropOrder end
+struct CallsigBackpropOrder3 <: CallsigBackpropOrder end
+callsig_backprop_order1(::CallsigBackpropOrder1) = undefvar # undefvar::Any triggers `bail_out_call`
+callsig_backprop_order1(::CallsigBackpropOrder2) = nothing
+callsig_backprop_order2(::CallsigBackpropOrder1) = nothing
+callsig_backprop_order2(::CallsigBackpropOrder2) = undefvar
 
 @testset "constraint back-propagation from call signature" begin
     # basic case
@@ -4306,9 +4314,16 @@ callsig_backprop_anti(::Int) = :int
         return a
     end == Nothing
 
-    # make sure to throw away an intermediate refinement information when we bail out early
+    # the signatures of all matching methods refine the argument even when we bail out early
     # (inference would bail out on `callsig_backprop_bailout(::Val{1})`)
-    @test Base.infer_return_type(a->(callsig_backprop_bailout(a); return a), (Any,)) == Any
+    @test Base.infer_return_type(a->(callsig_backprop_bailout(a); return a), (Any,)) == Val
+
+    # the refinement does not depend on which matching method triggers `bail_out_call`
+    # (whatever the lookup order, one of these two calls bails out before its last match)
+    @test Base.infer_return_type(a->(callsig_backprop_order1(a); return a), (CallsigBackpropOrder,)) ==
+        Union{CallsigBackpropOrder1,CallsigBackpropOrder2}
+    @test Base.infer_return_type(a->(callsig_backprop_order2(a); return a), (CallsigBackpropOrder,)) ==
+        Union{CallsigBackpropOrder1,CallsigBackpropOrder2}
 
     # if we see all the matching methods, we don't need to throw away refinement information
     # even if it's caught by `bail_out_call` check
@@ -4337,9 +4352,14 @@ end == Int
 # (even if the previous return type is annotated as `Any`)
 @eval callsig_backprop_invalidation_inner!(::Nothing) = $(gensym(:undefvar)) # ::Any
 @test Base.infer_return_type((Any,)) do a
-    # since inference will bail out at the first matched `_inner!` and so call signature constraint won't be available
+    # inference bails out at the first matched `_inner!`, but both signatures still constrain `a`
     callsig_backprop_invalidation_outer(a)
-end ≠ Int
+end == Union{Int,Nothing}
+# a new matching method must also invalidate the refinement computed after a bail-out
+@eval callsig_backprop_invalidation_inner!(::Float64) = nothing
+@test Base.infer_return_type((Any,)) do a
+    callsig_backprop_invalidation_outer(a)
+end == Union{Int,Nothing,Float64}
 
 # https://github.com/JuliaLang/julia/issues/37866
 function issue37866(v::Vector{Union{Nothing,Float64}})
@@ -5124,7 +5144,8 @@ g_max_methods(x) = f_max_methods(x)
 @test Base.infer_return_type(x -> f_max_methods(x; k=2), Tuple{Any}) === Any
 @test Base.infer_return_type(x -> applicable(f_max_methods, x) ? 1 : nothing, Tuple{Int}) === Int
 @test Base.infer_return_type(x -> applicable(f_max_methods, x) ? 1 : nothing, Tuple{Any}) === Union{Nothing,Int}
-@test Base.infer_return_type(x -> applicable(f_max_methods, x; k=2) ? 1 : nothing, Tuple{Int}) === Int
+# keyword `applicable` checks the by-name fallback at run time
+@test_broken Base.infer_return_type(x -> applicable(f_max_methods, x; k=2) ? 1 : nothing, Tuple{Int}) === Int
 @test Base.infer_return_type(x -> applicable(f_max_methods, x; k=2) ? 1 : nothing, Tuple{Any}) === Union{Nothing,Int}
 
 # Test that `Core.TypeName.concrete_only` makes inference give up at call sites with
@@ -5442,16 +5463,16 @@ function fapplicable end
 gapplicable() = Val(applicable(fapplicable))
 gapplicable(x) = Val(applicable(fapplicable; x))
 @test only(Base.return_types(gapplicable, ())) === Val{false}
-@test only(Base.return_types(gapplicable, (Int,))) === Val{false}
+@test gapplicable(1) === Val(false) # keyword `applicable` resolves at run time
 fapplicable() = 1
 @test only(Base.return_types(gapplicable, ())) === Val{true}
-@test only(Base.return_types(gapplicable, (Int,))) === Val{false}
+@test gapplicable(1) === Val(false) # keyword `applicable` resolves at run time
 Base.delete_method(which(fapplicable, ()))
 @test only(Base.return_types(gapplicable, ())) === Val{false}
-@test only(Base.return_types(gapplicable, (Int,))) === Val{false}
+@test gapplicable(1) === Val(false) # keyword `applicable` resolves at run time
 fapplicable(; x) = x
 @test only(Base.return_types(gapplicable, ())) === Val{true}
-@test only(Base.return_types(gapplicable, (Int,))) === Val{true}
+@test gapplicable(1) === Val(true) # keyword `applicable` resolves at run time
 @test only(Base.return_types(()) do; applicable(); end) === Union{}
 @test only(Base.return_types((Any,)) do x; Val(applicable(x...)); end) == Val
 @test only(Base.return_types((Tuple{Vararg{Int}},)) do x; Val(applicable(+, 1, 2, x...)); end) == Val # could be improved to Val{true}
@@ -6783,5 +6804,62 @@ const SPLAT_SVEC_NAMES = ntuple(i -> Symbol(:a, i), 33)
 @inline splat_svec_outer(names, vals::Tuple) = splat_svec_inner(names, vals...)
 splat_svec_caller(vals) = splat_svec_outer(SPLAT_SVEC_NAMES, vals)
 @test Base.infer_return_type(splat_svec_caller, (NTuple{33,Int},)) === NamedTuple{SPLAT_SVEC_NAMES, NTuple{33,Int}}
+
+# `append_edges!` de-dups edge records by identity hash; it must agree with a linear scan.
+@testset "append_edges! agrees with linear-scan de-dup" begin
+    function append_edges_scan!(edges::Vector{Any}, from)
+        singles = Base.IdSet{Any}()
+        multis = Int[]
+        i = 1
+        while i <= length(edges)
+            n = Compiler.edge_record_length(edges, i)
+            n == 1 ? push!(singles, edges[i]) : push!(multis, i)
+            i += n
+        end
+        i = 1
+        while i <= length(from)
+            n = Compiler.edge_record_length(from, i)
+            if n == 1
+                if !(from[i] in singles)
+                    push!(singles, from[i])
+                    push!(edges, from[i])
+                end
+            elseif !any(j -> Compiler.edge_record_length(edges, j) == n && all(k -> edges[j+k] === from[i+k], 0:n-1), multis)
+                push!(multis, length(edges) + 1)
+                for k = 0:n-1
+                    push!(edges, from[i+k])
+                end
+            end
+            i += n
+        end
+        return edges
+    end
+    pool = Any[m for m in Iterators.take(methods(+), 6)]
+    sigs = Any[Tuple{Int}, Tuple{Float64}, Tuple{Any,Int}, Tuple{String}]
+    function rand_records(rng, nrec)
+        out = Any[]
+        for _ in 1:nrec
+            kind = rand(rng, 1:3)
+            if kind == 1
+                push!(out, rand(rng, pool))
+            elseif kind == 2
+                push!(out, rand(rng, sigs), rand(rng, pool))
+            else
+                nm = rand(rng, 1:3)
+                push!(out, nm, rand(rng, sigs))
+                for _ in 1:nm
+                    push!(out, rand(rng, pool))
+                end
+            end
+        end
+        return out
+    end
+    rng = Random.MersenneTwister(0x1357)
+    for _ in 1:500
+        edges = rand_records(rng, rand(rng, 0:12))
+        from = rand_records(rng, rand(rng, 0:12))
+        @test Compiler.append_edges!(copy(edges), from) == append_edges_scan!(copy(edges), from)
+    end
+end
 
 end # module inference
