@@ -4319,6 +4319,7 @@ callsig_backprop_order2(::CallsigBackpropOrder2) = undefvar
     @test Base.infer_return_type(a->(callsig_backprop_bailout(a); return a), (Any,)) == Val
 
     # the refinement does not depend on which matching method triggers `bail_out_call`
+    # (whatever the lookup order, one of these two calls bails out before its last match)
     @test Base.infer_return_type(a->(callsig_backprop_order1(a); return a), (CallsigBackpropOrder,)) ==
         Union{CallsigBackpropOrder1,CallsigBackpropOrder2}
     @test Base.infer_return_type(a->(callsig_backprop_order2(a); return a), (CallsigBackpropOrder,)) ==
@@ -4354,6 +4355,11 @@ end == Int
     # inference bails out at the first matched `_inner!`, but both signatures still constrain `a`
     callsig_backprop_invalidation_outer(a)
 end == Union{Int,Nothing}
+# a new matching method must also invalidate the refinement computed after a bail-out
+@eval callsig_backprop_invalidation_inner!(::Float64) = nothing
+@test Base.infer_return_type((Any,)) do a
+    callsig_backprop_invalidation_outer(a)
+end == Union{Int,Nothing,Float64}
 
 # https://github.com/JuliaLang/julia/issues/37866
 function issue37866(v::Vector{Union{Nothing,Float64}})
